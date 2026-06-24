@@ -1,0 +1,40 @@
+name: Major Version Tag
+
+# Keeps a moving major-version tag (e.g. `v1`) pointing at the latest
+# release in that major series, so consumers can pin reusable workflows
+# with `@v1` and pick up fixes without chasing SHAs. Mirrors the SciML
+# `.github` pattern. Triggered when a `vN.M.K` release tag is published.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  major-version-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Move major-version tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          ref="${GITHUB_REF#refs/tags/}"
+          major="${ref%%.*}"          # v1.2.3 -> v1
+          if [ "$major" = "$ref" ]; then
+            echo "Not a vN.M.K tag ($ref); skipping." >&2
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f "$major" "$ref"
+          git push -f origin "refs/tags/$major"
+          echo "Moved $major -> $ref"

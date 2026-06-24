@@ -1,0 +1,49 @@
+name: Docs Preview Cleanup
+
+# Reusable doc-preview cleanup workflow for EpiAware Julia packages.
+#
+# When a pull request closes, deletes its `previews/PR<n>` directory from
+# the gh-pages branch and squashes the gh-pages history so old previews do
+# not accumulate. Call this from a thin caller triggered on
+# `pull_request: types: [closed]`.
+
+on:
+  workflow_call:
+    inputs:
+      git_user_name:
+        description: 'git author name for the cleanup commit'
+        required: false
+        type: string
+        default: 'github-actions[bot]'
+      git_user_email:
+        description: 'git author email for the cleanup commit'
+        required: false
+        type: string
+        default: 'action@github.com'
+
+jobs:
+  doc-preview-cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout gh-pages branch
+        uses: actions/checkout@v6
+        with:
+          ref: gh-pages
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Delete preview and history + push changes
+        run: |
+            if [ -d "previews/PR$PRNUM" ]; then
+              git config user.name "$GIT_USER_NAME"
+              git config user.email "$GIT_USER_EMAIL"
+              git rm -rf "previews/PR$PRNUM"
+              git commit -m "delete preview for PR$PRNUM"
+              git branch gh-pages-new $(echo "delete history" | git commit-tree HEAD^{tree})
+              git push --force origin gh-pages-new:gh-pages
+            fi
+        env:
+            PRNUM: ${{ github.event.number }}
+            GIT_USER_NAME: ${{ inputs.git_user_name }}
+            GIT_USER_EMAIL: ${{ inputs.git_user_email }}
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,63 @@
+name: Coverage
+
+# Reusable coverage workflow for EpiAware Julia packages.
+#
+# Runs the test suite once with coverage instrumentation, processes the
+# coverage (over `src` and any extensions), and uploads to Codecov. The
+# Codecov token is read from the inherited `CODECOV_TOKEN` secret.
+
+on:
+  workflow_call:
+    inputs:
+      julia_version:
+        description: 'Julia version to collect coverage on'
+        required: false
+        type: string
+        default: 'lts'
+      test_args:
+        description: 'Args passed to julia-runtest test_args'
+        required: false
+        type: string
+        default: 'skip_quality'
+      coverage_directories:
+        description: 'Directories to process for coverage (comma separated)'
+        required: false
+        type: string
+        default: 'src'
+      flags:
+        description: 'Codecov flag for this upload'
+        required: false
+        type: string
+        default: 'unit'
+      fail_ci_if_error:
+        description: 'Fail the job if the Codecov upload errors'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ inputs.julia_version }}
+      - uses: julia-actions/cache@v3
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          annotate: true
+          test_args: ${{ inputs.test_args }}
+      - uses: julia-actions/julia-processcoverage@v1
+        with:
+          directories: ${{ inputs.coverage_directories }}
+      - uses: codecov/codecov-action@v7
+        with:
+          files: lcov.info
+          flags: ${{ inputs.flags }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: ${{ inputs.fail_ci_if_error }}

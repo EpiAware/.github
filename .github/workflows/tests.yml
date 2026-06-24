@@ -1,0 +1,74 @@
+name: Tests
+
+# Reusable test-matrix workflow for EpiAware Julia packages.
+#
+# Runs the standard setup-julia -> cache -> buildpkg -> runtest sequence
+# across a Julia version / OS matrix. The `pre` Julia version is marked
+# experimental (continue-on-error) via the `experimental_versions` input.
+#
+# The `skip_quality` convention: quality checks (Aqua, formatting, doctests)
+# are slow, so the caller can skip them on most cells via the
+# `skip_quality` test arg. By default quality runs on the `quality_version`
+# (non-Windows) cells and is skipped on every other version and on Windows.
+# Set `skip_quality: false` to never pass the arg (run quality on every
+# cell), or override `quality_version` to choose which version runs it.
+
+on:
+  workflow_call:
+    inputs:
+      julia_versions:
+        description: 'JSON array of Julia versions, e.g. ["1","lts","pre"]'
+        required: false
+        type: string
+        default: '["1", "lts", "pre"]'
+      os:
+        description: 'JSON array of runner OSes'
+        required: false
+        type: string
+        default: '["ubuntu-latest", "windows-latest", "macOS-latest"]'
+      experimental_versions:
+        description: 'JSON array of versions allowed to fail'
+        required: false
+        type: string
+        default: '["pre"]'
+      skip_quality:
+        description: 'Pass the skip_quality test arg outside the quality cell'
+        required: false
+        type: boolean
+        default: true
+      quality_version:
+        description: 'Julia version on which quality checks run (on ubuntu)'
+        required: false
+        type: string
+        default: '1'
+      fail_fast:
+        description: 'Cancel remaining matrix jobs when one fails'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ contains(fromJSON(inputs.experimental_versions), matrix.julia-version) }}
+    strategy:
+      fail-fast: ${{ inputs.fail_fast }}
+      matrix:
+        julia-version: ${{ fromJSON(inputs.julia_versions) }}
+        os: ${{ fromJSON(inputs.os) }}
+    env:
+      JULIA_CI_EXPERIMENTAL: ${{ contains(fromJSON(inputs.experimental_versions), matrix.julia-version) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.julia-version }}
+      - uses: julia-actions/cache@v3
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          test_args: >-
+            ${{ (inputs.skip_quality &&
+                 (matrix.julia-version != inputs.quality_version ||
+                  matrix.os == 'windows-latest'))
+                && 'skip_quality' || '' }}
