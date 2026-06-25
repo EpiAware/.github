@@ -1,11 +1,5 @@
 name: Downgrade
 
-# Reusable downgrade-compat workflow for EpiAware Julia packages.
-#
-# Resolves the oldest dependency versions allowed by the package's compat
-# bounds (via julia-actions/julia-downgrade-compat) and runs the test
-# suite against them, catching compat lower bounds that are too loose.
-
 on:
   workflow_call:
     inputs:

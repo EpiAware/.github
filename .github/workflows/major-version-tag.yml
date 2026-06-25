@@ -1,10 +1,5 @@
 name: Major Version Tag
 
-# Keeps a moving major-version tag (e.g. `v1`) pointing at the latest
-# release in that major series, so consumers can pin reusable workflows
-# with `@v1` and pick up fixes without chasing SHAs. Mirrors the SciML
-# `.github` pattern. Triggered when a `vN.M.K` release tag is published.
-
 on:
   push:
     tags:
@@ -27,7 +22,7 @@ jobs:
         run: |
           set -euo pipefail
           ref="${GITHUB_REF#refs/tags/}"
-          major="${ref%%.*}"          # v1.2.3 -> v1
+          major="${ref%%.*}"
           if [ "$major" = "$ref" ]; then
             echo "Not a vN.M.K tag ($ref); skipping." >&2
             exit 0

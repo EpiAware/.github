@@ -1,11 +1,5 @@
 name: Coverage
 
-# Reusable coverage workflow for EpiAware Julia packages.
-#
-# Runs the test suite once with coverage instrumentation, processes the
-# coverage (over `src` and any extensions), and uploads to Codecov. The
-# Codecov token is read from the inherited `CODECOV_TOKEN` secret.
-
 on:
   workflow_call:
     inputs:

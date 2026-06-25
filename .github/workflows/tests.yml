@@ -1,18 +1,5 @@
 name: Tests
 
-# Reusable test-matrix workflow for EpiAware Julia packages.
-#
-# Runs the standard setup-julia -> cache -> buildpkg -> runtest sequence
-# across a Julia version / OS matrix. The `pre` Julia version is marked
-# experimental (continue-on-error) via the `experimental_versions` input.
-#
-# The `skip_quality` convention: quality checks (Aqua, formatting, doctests)
-# are slow, so the caller can skip them on most cells via the
-# `skip_quality` test arg. By default quality runs on the `quality_version`
-# (non-Windows) cells and is skipped on every other version and on Windows.
-# Set `skip_quality: false` to never pass the arg (run quality on every
-# cell), or override `quality_version` to choose which version runs it.
-
 on:
   workflow_call:
     inputs:

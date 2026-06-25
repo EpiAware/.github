@@ -1,12 +1,5 @@
 name: Docs Preview Cleanup
 
-# Reusable doc-preview cleanup workflow for EpiAware Julia packages.
-#
-# When a pull request closes, deletes its `previews/PR<n>` directory from
-# the gh-pages branch and squashes the gh-pages history so old previews do
-# not accumulate. Call this from a thin caller triggered on
-# `pull_request: types: [closed]`.
-
 on:
   workflow_call:
     inputs:
@@ -19,7 +12,7 @@ on:
         description: 'git author email for the cleanup commit'
         required: false
         type: string
-        default: 'action@github.com'
+        default: 'github-actions[bot]@users.noreply.github.com'
 
 jobs:
   doc-preview-cleanup:

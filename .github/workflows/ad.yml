@@ -1,20 +1,26 @@
-name: AD backend
+name: AD
 
 on:
   workflow_call:
     inputs:
-      name:
-        description: 'Display name for the run (e.g. "Enzyme reverse")'
-        required: true
+      backends:
+        description: >-
+          JSON array of {name, tag, flag} objects, one per AD backend
+        required: false
         type: string
-      tag:
-        description: 'Test-item tag to select (e.g. enzyme_reverse)'
-        required: true
-        type: string
-      flag:
-        description: 'Codecov flag for this backend (e.g. ad-enzyme-reverse)'
-        required: true
-        type: string
+        default: >-
+          [{"name": "ForwardDiff", "tag": "forwarddiff",
+            "flag": "ad-forwarddiff"},
+           {"name": "ReverseDiff (tape)", "tag": "reversediff",
+            "flag": "ad-reversediff"},
+           {"name": "Mooncake forward", "tag": "mooncake_forward",
+            "flag": "ad-mooncake-forward"},
+           {"name": "Mooncake reverse", "tag": "mooncake_reverse",
+            "flag": "ad-mooncake-reverse"},
+           {"name": "Enzyme forward", "tag": "enzyme_forward",
+            "flag": "ad-enzyme-forward"},
+           {"name": "Enzyme reverse", "tag": "enzyme_reverse",
+            "flag": "ad-enzyme-reverse"}]
       julia-version:
         description: 'Julia version to test on'
         required: false
@@ -36,8 +42,12 @@ on:
 
 jobs:
   ad:
-    name: ${{ inputs.name }}
+    name: ${{ matrix.backend.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: ${{ fromJSON(inputs.backends) }}
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v3
@@ -51,13 +61,13 @@ jobs:
       - name: Run AD gradient tests
         run: |
           julia --project=${{ inputs.test_project }} --code-coverage=user \
-            ${{ inputs.test_project }}/runtests.jl ${{ inputs.tag }}
+            ${{ inputs.test_project }}/runtests.jl ${{ matrix.backend.tag }}
       - uses: julia-actions/julia-processcoverage@v1
         with:
           directories: ${{ inputs.coverage_directories }}
       - uses: codecov/codecov-action@v7
         with:
           files: lcov.info
-          flags: ${{ inputs.flag }}
+          flags: ${{ matrix.backend.flag }}
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
