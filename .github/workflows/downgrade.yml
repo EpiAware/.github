@@ -1,0 +1,44 @@
+name: Downgrade
+
+# Reusable downgrade-compat workflow for EpiAware Julia packages.
+#
+# Resolves the oldest dependency versions allowed by the package's compat
+# bounds (via julia-actions/julia-downgrade-compat) and runs the test
+# suite against them, catching compat lower bounds that are too loose.
+
+on:
+  workflow_call:
+    inputs:
+      julia_version:
+        description: 'Julia version to run the downgrade suite on'
+        required: false
+        type: string
+        default: '1.10'
+      mode:
+        description: 'julia-downgrade-compat mode (deps, alldeps, ...)'
+        required: false
+        type: string
+        default: 'deps'
+      test_args:
+        description: 'Extra args passed to julia-runtest test_args'
+        required: false
+        type: string
+        default: 'skip_quality'
+
+jobs:
+  downgrade-compat:
+    name: Downgrade Compat
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ inputs.julia_version }}
+      - uses: julia-actions/julia-downgrade-compat@v2
+        with:
+          mode: ${{ inputs.mode }}
+      - uses: julia-actions/cache@v3
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          test_args: ${{ inputs.test_args }}

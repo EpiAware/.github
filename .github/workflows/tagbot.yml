@@ -1,0 +1,29 @@
+name: TagBot
+
+# Reusable TagBot workflow for EpiAware Julia packages.
+#
+# Standard JuliaRegistries TagBot. Triggers tags/releases after a package
+# version is merged in the General registry. DOCUMENTER_KEY is inherited so
+# tagging also triggers a versioned docs deploy.
+
+on:
+  workflow_call:
+    inputs:
+      lookback:
+        description: 'Number of days TagBot looks back for releases'
+        required: false
+        type: string
+        default: '3'
+    secrets:
+      DOCUMENTER_KEY:
+        required: false
+
+jobs:
+  TagBot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: JuliaRegistries/TagBot@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ssh: ${{ secrets.DOCUMENTER_KEY }}
+          lookback: ${{ inputs.lookback }}
