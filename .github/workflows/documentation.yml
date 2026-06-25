@@ -1,14 +1,5 @@
 name: Documentation
 
-# Reusable Documenter build/deploy workflow for EpiAware Julia packages.
-#
-# Instantiates the `docs` project with the package developed in, builds and
-# deploys the docs via julia-actions/julia-docdeploy, and (on pull
-# requests) posts/updates a single comment linking to the deployed preview.
-#
-# Secrets: GITHUB_TOKEN is provided automatically; DOCUMENTER_KEY (for
-# ssh-based gh-pages deploy) is read from the inherited secret when present.
-
 on:
   workflow_call:
     inputs:

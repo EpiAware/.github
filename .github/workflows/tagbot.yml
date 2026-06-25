@@ -1,11 +1,5 @@
 name: TagBot
 
-# Reusable TagBot workflow for EpiAware Julia packages.
-#
-# Standard JuliaRegistries TagBot. Triggers tags/releases after a package
-# version is merged in the General registry. DOCUMENTER_KEY is inherited so
-# tagging also triggers a versioned docs deploy.
-
 on:
   workflow_call:
     inputs:

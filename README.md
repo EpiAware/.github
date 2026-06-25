@@ -17,17 +17,33 @@ design and rationale.
 
 ### Available workflows
 
-| Workflow | Purpose | Key inputs |
+Every input carries a default, so a caller can omit any input it does not
+need to override.
+The defaults are EpiAware's house values (CensoredDistributions.jl's
+current settings), so a package matching that baseline writes a near-empty
+caller and overrides only where it genuinely differs.
+
+| Workflow | Purpose | Key inputs (default) |
 |---|---|---|
-| `tests.yml` | Test matrix (Julia versions x OS) + skip_quality | `julia_versions`, `os`, `experimental_versions`, `skip_quality`, `quality_version`, `fail_fast` |
-| `downgrade.yml` | Test against oldest compatible deps | `julia_version`, `mode`, `test_args` |
-| `coverage.yml` | Single-run coverage + Codecov upload | `julia_version`, `test_args`, `coverage_directories`, `flags`, `fail_ci_if_error` |
+| `tests.yml` | Test matrix (Julia versions x OS) + skip_quality | `julia_versions` (`["1","lts","pre"]`), `os` (ubuntu/windows/macOS), `experimental_versions` (`["pre"]`), `skip_quality`, `quality_version`, `fail_fast` |
+| `downgrade.yml` | Test against oldest compatible deps | `julia_version` (`1.10`), `mode` (`deps`), `test_args` |
+| `coverage.yml` | Single-run coverage + Codecov upload | `julia_version`, `test_args`, `coverage_directories` (`src`), `flags` (`unit`), `fail_ci_if_error` |
 | `documentation.yml` | Documenter build/deploy + PR preview comment | `julia_version`, `julia_num_threads` |
-| `docs-preview-cleanup.yml` | Delete closed-PR previews from gh-pages | `git_user_name`, `git_user_email` |
-| `format-check.yml` | Python + pinned JuliaFormatter + pre-commit | `juliaformatter_version`, `extra_args` |
-| `tagbot.yml` | JuliaRegistries TagBot | `lookback` |
-| `ad-backend.yml` | Per-backend AD gradient suite + coverage | `name`, `tag`, `flag`, `julia-version`, `test_project`, `coverage_directories` |
+| `docs-preview-cleanup.yml` | Delete closed-PR previews from gh-pages | `git_user_name`, `git_user_email` (both default to the derived `github-actions[bot]` identity) |
+| `format-check.yml` | Python + pinned JuliaFormatter + pre-commit | `juliaformatter_version` (`2.5.5`), `extra_args` |
+| `tagbot.yml` | JuliaRegistries TagBot | `lookback` (`3`) |
+| `ad.yml` | AD gradient suite, internally matrixed over a backend list | `backends` (default: the six EpiAware backends below), `julia-version`, `test_project` (`test/ad`), `coverage_directories` (`src,ext`) |
+| `ad-backend.yml` | Single-backend AD runner (one check per caller job) | `name`, `tag`, `flag`, `julia-version`, `test_project`, `coverage_directories` |
 | `major-version-tag.yml` | Maintains the moving `@v1` tag (runs here) | — |
+
+`ad.yml` matrixes over its `backends` input internally
+(`strategy.matrix.backend: ${{ fromJSON(inputs.backends) }}`), so a package
+calls it ONCE instead of one caller per backend. The default `backends`
+list is the EpiAware AD set: ForwardDiff, ReverseDiff (tape), Mooncake
+forward, Mooncake reverse, Enzyme forward, Enzyme reverse. Override
+`backends` with a JSON array of `{name, tag, flag}` objects only to test a
+different set. `ad-backend.yml` (one backend per call, its own check name)
+remains for packages that need per-backend checks rather than a matrix.
 
 ### Versioning
 
@@ -55,29 +71,27 @@ concurrency:
 jobs:
   test:
     uses: EpiAware/.github/.github/workflows/tests.yml@v1
-    with:
-      julia_versions: '["1", "lts", "pre"]'
     secrets: inherit
 ```
 
-For one AD backend (one thin caller per backend, so each gets its own
-check; the caller job id and the `name` input determine the check name,
-e.g. `forwarddiff / ForwardDiff`):
+The caller omits `julia_versions` / `os` entirely and inherits the default
+matrix. A package that needs a different grid passes only the input it
+changes.
+
+All AD backends in one call (the default `backends` list runs the six
+EpiAware backends as a matrix, each a `ad / <name>` check, e.g.
+`ad / ForwardDiff`):
 
 ```yaml
-name: AD ForwardDiff
+name: AD
 on:
   push:
     branches: [main]
   pull_request:
   merge_group:
 jobs:
-  forwarddiff:
-    uses: EpiAware/.github/.github/workflows/ad-backend.yml@v1
-    with:
-      name: ForwardDiff
-      tag: forwarddiff
-      flag: ad-forwarddiff
+  ad:
+    uses: EpiAware/.github/.github/workflows/ad.yml@v1
     secrets: inherit
 ```
 
