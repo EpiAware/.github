@@ -34,6 +34,7 @@ caller and overrides only where it genuinely differs.
 | `tagbot.yml` | JuliaRegistries TagBot | `lookback` (`3`) |
 | `ad.yml` | AD gradient suite, internally matrixed over a backend list | `backends` (default: the six EpiAware backends below), `julia-version`, `test_project` (`test/ad`), `coverage_directories` (`src,ext`), `fail_fast` (`false`) |
 | `ad-backend.yml` | Single-backend AD runner (one check per caller job) | `name`, `tag`, `flag`, `julia-version`, `test_project`, `coverage_directories` |
+| `downstream.yml` | Reverse-dependency tests (opt-in), internally matrixed over a downstream list | `downstreams` (`[]`), `julia_version`, `os`, `coverage` |
 | `major-version-tag.yml` | Maintains the moving `@v1` tag (runs here) | — |
 
 `ad.yml` matrixes over its `backends` input internally
@@ -65,6 +66,27 @@ resolve to the caller's context, so duplicating a `concurrency:` group here
 would collide with the caller's own group. Each consuming caller must carry
 `concurrency: { group: ${{ github.workflow }}-${{ github.ref }},
 cancel-in-progress: true }` (see the caller example below).
+### Downstream (reverse-dependency) tests
+
+`downstream.yml` catches the case where a change to a base package breaks
+a package that depends on it, mirroring SciML's `Downstream.yml`. For each
+entry in the `downstreams` JSON list it checks out the downstream,
+`Pkg.develop`s this PR's version of the base package into the downstream
+env, then runs the downstream test suite (with the entry's `group` set as
+the `GROUP` env). A failed dependency resolve is read as a deliberate
+breaking change and the job exits green, as in SciML; real test failures
+still red the run unless the entry sets `allow_fail: true`.
+
+It is heavy, so it is opt-in: callers trigger it on `workflow_dispatch` or
+a `downstream`/`reverse-deps` label, not on every push. With an empty
+`downstreams` list (the default) the job is skipped, so a package can wire
+the caller before it has any registered downstreams. Each entry takes
+`repo` (`owner/name`), optional `group`, and optional `allow_fail`:
+
+```yaml
+downstreams: >-
+  [{"repo":"EpiAware/EpiAwareTestUtils.jl","group":"All"}]
+```
 
 ### Versioning
 
