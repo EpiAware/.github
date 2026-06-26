@@ -85,7 +85,7 @@ the caller before it has any registered downstreams. Each entry takes
 
 ```yaml
 downstreams: >-
-  [{"repo":"EpiAware/EpiAwareTestUtils.jl","group":"All"}]
+  [{"repo":"EpiAware/EpiAwarePackageTools.jl","group":"All"}]
 ```
 
 ### Versioning
