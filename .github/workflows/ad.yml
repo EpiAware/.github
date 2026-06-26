@@ -36,6 +36,16 @@ on:
         required: false
         type: string
         default: 'src,ext'
+      fail_fast:
+        description: >-
+          Cancel remaining backends when one fails. Default false so a
+          single backend break still reports the full per-backend matrix
+          (we want to know every backend that regressed, not just the
+          first). Set true to free runners faster during a backlog at the
+          cost of that full picture.
+        required: false
+        type: boolean
+        default: false
     secrets:
       CODECOV_TOKEN:
         required: false
@@ -44,8 +54,11 @@ jobs:
   ad:
     name: ${{ matrix.backend.name }}
     runs-on: ubuntu-latest
+    # AD backends (esp. Enzyme) are the slowest legs; cap them so a hung
+    # gradient compile is killed rather than holding a runner for hours.
+    timeout-minutes: 60
     strategy:
-      fail-fast: false
+      fail-fast: ${{ inputs.fail_fast }}
       matrix:
         backend: ${{ fromJSON(inputs.backends) }}
     steps:

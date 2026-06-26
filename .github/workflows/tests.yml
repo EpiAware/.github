@@ -37,6 +37,9 @@ on:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    # Kill a hung leg fast so it frees the runner instead of sitting in
+    # "lost communication" until the 6h ceiling.
+    timeout-minutes: 60
     continue-on-error: ${{ contains(fromJSON(inputs.experimental_versions), matrix.julia-version) }}
     strategy:
       fail-fast: ${{ inputs.fail_fast }}

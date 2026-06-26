@@ -25,6 +25,8 @@ jobs:
       pull-requests: write
     name: Documentation
     runs-on: ubuntu-latest
+    # Docs build/deploy; cap so a hung Documenter run frees the runner.
+    timeout-minutes: 45
     env:
       JULIA_NUM_THREADS: ${{ inputs.julia_num_threads }}
     steps:
