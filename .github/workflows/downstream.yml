@@ -21,7 +21,7 @@ on:
           (owner/name) and may set `group` (sets the GROUP env for the
           downstream suite) and `allow_fail` (true keeps a failure from
           reding the run). Example:
-          [{"repo":"EpiAware/EpiAwareTestUtils.jl","group":"All"}]
+          [{"repo":"EpiAware/EpiAwarePackageTools.jl","group":"All"}]
         required: false
         type: string
         default: '[]'
