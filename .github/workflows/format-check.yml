@@ -17,6 +17,8 @@ on:
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
+    # Cheap formatting/lint gate; a hung hook should die quickly.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6

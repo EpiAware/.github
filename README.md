@@ -32,7 +32,7 @@ caller and overrides only where it genuinely differs.
 | `docs-preview-cleanup.yml` | Delete closed-PR previews from gh-pages | `git_user_name`, `git_user_email` (both default to the derived `github-actions[bot]` identity) |
 | `format-check.yml` | Python + pinned JuliaFormatter + pre-commit | `juliaformatter_version` (`2.5.5`), `extra_args` |
 | `tagbot.yml` | JuliaRegistries TagBot | `lookback` (`3`) |
-| `ad.yml` | AD gradient suite, internally matrixed over a backend list | `backends` (default: the six EpiAware backends below), `julia-version`, `test_project` (`test/ad`), `coverage_directories` (`src,ext`) |
+| `ad.yml` | AD gradient suite, internally matrixed over a backend list | `backends` (default: the six EpiAware backends below), `julia-version`, `test_project` (`test/ad`), `coverage_directories` (`src,ext`), `fail_fast` (`false`) |
 | `ad-backend.yml` | Single-backend AD runner (one check per caller job) | `name`, `tag`, `flag`, `julia-version`, `test_project`, `coverage_directories` |
 | `downstream.yml` | Reverse-dependency tests (opt-in), internally matrixed over a downstream list | `downstreams` (`[]`), `julia_version`, `os`, `coverage` |
 | `major-version-tag.yml` | Maintains the moving `@v1` tag (runs here) | — |
@@ -46,6 +46,26 @@ forward, Mooncake reverse, Enzyme forward, Enzyme reverse. Override
 different set. `ad-backend.yml` (one backend per call, its own check name)
 remains for packages that need per-backend checks rather than a matrix.
 
+### Fast-failing and runner efficiency
+
+Every job sets a `timeout-minutes` so a hung run ("runner lost
+communication") is killed and its slot freed instead of sitting until the
+6h ceiling: 60 for the test and AD matrices, 45 for coverage / downgrade /
+docs, 20 for the format check, 10-15 for the housekeeping jobs.
+
+`tests.yml` defaults `fail_fast: true` (cancel the rest of the version x OS
+grid once one leg fails — a cheap matrix where the first failure is enough
+to act on). `ad.yml` defaults `fail_fast: false` so a single backend break
+still reports the full per-backend picture; set `fail_fast: true` on the
+caller to free runners faster during a backlog at the cost of that full
+coverage.
+
+Concurrency (cancel a superseded run on a new push) is set on the *caller*
+workflows, not here: inside a reusable, `github.workflow`/`github.ref`
+resolve to the caller's context, so duplicating a `concurrency:` group here
+would collide with the caller's own group. Each consuming caller must carry
+`concurrency: { group: ${{ github.workflow }}-${{ github.ref }},
+cancel-in-progress: true }` (see the caller example below).
 ### Downstream (reverse-dependency) tests
 
 `downstream.yml` catches the case where a change to a base package breaks

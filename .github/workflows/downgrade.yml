@@ -23,6 +23,8 @@ jobs:
   downgrade-compat:
     name: Downgrade Compat
     runs-on: ubuntu-latest
+    # Single suite against oldest deps; cap to free a hung runner.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v3
