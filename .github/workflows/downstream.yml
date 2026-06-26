@@ -1,0 +1,98 @@
+name: Downstream
+
+# Reverse-dependency (downstream) tests, modelled on SciML's
+# Downstream.yml. For each downstream package it checks out the
+# downstream, `Pkg.develop`s this PR's version of the base package into
+# the downstream env, then runs the downstream test suite. A failed
+# dependency resolve is treated as an intentional breaking change (the
+# job exits green), matching SciML's policy; real test failures still
+# red unless the entry is marked allow_fail.
+#
+# This is heavy and opt-in. Callers should trigger it on demand
+# (workflow_dispatch) or via a `downstream`/`reverse-deps` label, never
+# on every push. It runs nothing unless `downstreams` is non-empty.
+
+on:
+  workflow_call:
+    inputs:
+      downstreams:
+        description: >-
+          JSON array of downstream packages. Each entry needs `repo`
+          (owner/name) and may set `group` (sets the GROUP env for the
+          downstream suite) and `allow_fail` (true keeps a failure from
+          reding the run). Example:
+          [{"repo":"EpiAware/EpiAwareTestUtils.jl","group":"All"}]
+        required: false
+        type: string
+        default: '[]'
+      julia_version:
+        description: 'Julia version to run the downstream suites on'
+        required: false
+        type: string
+        default: '1'
+      os:
+        description: 'Runner OS for the downstream suites'
+        required: false
+        type: string
+        default: 'ubuntu-latest'
+      coverage:
+        description: 'Collect coverage from the downstream test run'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+
+jobs:
+  downstream:
+    # Skip cleanly when no downstreams are configured.
+    if: ${{ inputs.downstreams != '[]' && inputs.downstreams != '' }}
+    name: ${{ matrix.downstream.repo }}${{ matrix.downstream.group && format(' ({0})', matrix.downstream.group) || '' }}
+    runs-on: ${{ inputs.os }}
+    # Allow a downstream to opt out of reding the run via allow_fail.
+    continue-on-error: ${{ matrix.downstream.allow_fail || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        downstream: ${{ fromJSON(inputs.downstreams) }}
+    env:
+      GROUP: ${{ matrix.downstream.group || 'All' }}
+    steps:
+      # Base package (the repo calling this reusable) checks out first.
+      - uses: actions/checkout@v6
+      - name: Checkout downstream ${{ matrix.downstream.repo }}
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ matrix.downstream.repo }}
+          path: downstream
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ inputs.julia_version }}
+      - uses: julia-actions/cache@v3
+      - name: Develop base package into downstream env and test
+        shell: julia --color=yes --project=downstream {0}
+        run: |
+          using Pkg
+          try
+            # Force the downstream onto this PR's version of the base pkg.
+            Pkg.develop(PackageSpec(path="."))  # may fail on main deps
+            Pkg.update()
+            Pkg.test(coverage=${{ inputs.coverage }})  # may fail on test deps
+          catch err
+            err isa Pkg.Resolve.ResolverError || rethrow()
+            # An unresolvable env means a deliberate breaking change by
+            # SemVer, so treat it as a pass rather than a failure.
+            @info "Downstream not compatible with this change. No problem." exception=err
+            exit(0)
+          end
+      - uses: julia-actions/julia-processcoverage@v1
+        if: ${{ inputs.coverage }}
+      - uses: codecov/codecov-action@v7
+        if: ${{ inputs.coverage }}
+        continue-on-error: true
+        with:
+          files: lcov.info
+          flags: downstream
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
