@@ -29,10 +29,18 @@ on:
         type: string
         default: '1'
       fail_fast:
-        description: 'Cancel remaining matrix jobs when one fails'
+        description: >-
+          Cancel remaining matrix jobs when one fails. Default false: this
+          matrix mixes the required merge-gate legs (Julia 1/lts on ubuntu)
+          with non-required legs (macOS, windows, and the pre-release Julia
+          `pre`, where Mooncake/AD are expected-flaky). With fail-fast on,
+          a failure on a non-required leg cancels the required ubuntu legs,
+          so a PR can never confirm essential-green and the merge queue
+          stalls (CD #766). Keep false so every OS x version leg runs
+          independently.
         required: false
         type: boolean
-        default: true
+        default: false
 
 jobs:
   test:
@@ -40,8 +48,15 @@ jobs:
     # Kill a hung leg fast so it frees the runner instead of sitting in
     # "lost communication" until the 6h ceiling.
     timeout-minutes: 60
+    # Pre-release Julia (experimental_versions, default ["pre"]) is allowed
+    # to fail: Mooncake/AD don't support pre-release Julia, so `test (pre,*)`
+    # is expected-flaky and must never gate. Note this only stops it being
+    # *blocking*; with fail-fast it would still CANCEL siblings, which is
+    # why fail_fast defaults to false above.
     continue-on-error: ${{ contains(fromJSON(inputs.experimental_versions), matrix.julia-version) }}
     strategy:
+      # false so a non-required leg (macOS, windows, or pre-release Julia)
+      # never cancels the required ubuntu legs the merge queue gates on.
       fail-fast: ${{ inputs.fail_fast }}
       matrix:
         julia-version: ${{ fromJSON(inputs.julia_versions) }}
