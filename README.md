@@ -53,12 +53,17 @@ communication") is killed and its slot freed instead of sitting until the
 6h ceiling: 60 for the test and AD matrices, 45 for coverage / downgrade /
 docs, 20 for the format check, 10-15 for the housekeeping jobs.
 
-`tests.yml` defaults `fail_fast: true` (cancel the rest of the version x OS
-grid once one leg fails — a cheap matrix where the first failure is enough
-to act on). `ad.yml` defaults `fail_fast: false` so a single backend break
-still reports the full per-backend picture; set `fail_fast: true` on the
-caller to free runners faster during a backlog at the cost of that full
-coverage.
+`tests.yml` defaults `fail_fast: false`. The matrix mixes the required
+merge-gate legs (Julia 1/lts on ubuntu) with non-required legs (macOS,
+windows, and pre-release Julia `pre`, where Mooncake/AD are
+expected-flaky). With fail-fast on, a non-required leg failing would cancel
+the required ubuntu legs, so a PR could never confirm essential-green and
+the merge queue would stall (CD #766). Pre-release legs are additionally
+`continue-on-error` (via `experimental_versions`, default `["pre"]`) so
+they never block; fail-fast false is what stops them *cancelling* siblings.
+`ad.yml` defaults `fail_fast: false` so a single backend break still
+reports the full per-backend picture; set `fail_fast: true` on the caller
+to free runners faster during a backlog at the cost of that full coverage.
 
 Concurrency (cancel a superseded run on a new push) is set on the *caller*
 workflows, not here: inside a reusable, `github.workflow`/`github.ref`
