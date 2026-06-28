@@ -30,6 +30,7 @@ caller and overrides only where it genuinely differs.
 | `coverage.yml` | Single-run coverage + Codecov upload | `julia_version`, `test_args`, `coverage_directories` (`src`), `flags` (`unit`), `fail_ci_if_error` |
 | `documentation.yml` | Documenter build/deploy + PR preview comment | `julia_version`, `julia_num_threads` |
 | `docs-preview-cleanup.yml` | Delete closed-PR previews from gh-pages | `git_user_name`, `git_user_email` (both default to the derived `github-actions[bot]` identity) |
+| `cancel-on-close.yml` | Cancel in-progress/queued runs on a PR's head branch when the PR is closed or merged | `head_ref` (defaults to the event's `pull_request.head.ref`) |
 | `format-check.yml` | Python + pinned JuliaFormatter + pre-commit | `juliaformatter_version` (`2.5.5`), `extra_args` |
 | `tagbot.yml` | JuliaRegistries TagBot | `lookback` (`3`) |
 | `ad.yml` | AD gradient suite, internally matrixed over a backend list | `backends` (default: the six EpiAware backends below), `julia-version`, `test_project` (`test/ad`), `coverage_directories` (`src,ext`), `fail_fast` (`false`) |
@@ -65,12 +66,28 @@ they never block; fail-fast false is what stops them *cancelling* siblings.
 reports the full per-backend picture; set `fail_fast: true` on the caller
 to free runners faster during a backlog at the cost of that full coverage.
 
-Concurrency (cancel a superseded run on a new push) is set on the *caller*
-workflows, not here: inside a reusable, `github.workflow`/`github.ref`
-resolve to the caller's context, so duplicating a `concurrency:` group here
-would collide with the caller's own group. Each consuming caller must carry
+Two complementary mechanisms free runners from stale runs:
+
+1. **Concurrency groups (push-supersede).** Cancelling a superseded run on
+a new push is set on the *caller* workflows, not in the reusables: inside a
+reusable, `github.workflow`/`github.ref` resolve to the caller's context, so
+duplicating a `concurrency:` group here would collide with the caller's own
+group. Each consuming caller must carry
 `concurrency: { group: ${{ github.workflow }}-${{ github.ref }},
-cancel-in-progress: true }` (see the caller example below).
+cancel-in-progress: true }` (see the caller examples below). This cancels a
+prior run only when a NEW push lands on the same ref; it does nothing when a
+PR is closed or merged without a further push.
+
+2. **Cancel on close/merge.** `cancel-on-close.yml` covers that gap. When a
+PR is closed or merged, GitHub stops scheduling new runs but leaves any
+in-progress and queued runs going until they finish or hit the 6h ceiling.
+The reusable cancels them by listing in-progress/queued runs on the closed
+PR's head branch and `gh run cancel`-ing each. It uses only the runner's
+preinstalled `gh` CLI with the default `GITHUB_TOKEN` (no third-party
+action), and needs `actions: write`. Callers trigger it on
+`pull_request: types: [closed]`, the same trigger as
+`docs-preview-cleanup.yml`; the cancel run executes in the base-branch
+context, not on the head ref, so it never cancels itself.
 ### Downstream (reverse-dependency) tests
 
 `downstream.yml` catches the case where a change to a base package breaks
@@ -137,10 +154,30 @@ on:
     branches: [main]
   pull_request:
   merge_group:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   ad:
     uses: EpiAware/.github/.github/workflows/ad.yml@v1
     secrets: inherit
+```
+
+Cancel a PR's runs when it is closed or merged. Add this once per package;
+it covers every workflow on that PR's branch, so one caller is enough:
+
+```yaml
+name: Cancel on Close
+on:
+  pull_request:
+    types: [closed]
+jobs:
+  cancel:
+    uses: EpiAware/.github/.github/workflows/cancel-on-close.yml@v1
+    secrets: inherit
+    permissions:
+      actions: write
+      contents: read
 ```
 
 ### What stays per-repo
