@@ -1,0 +1,63 @@
+name: Cancel on Close
+
+# Cancels in-progress and queued workflow runs on a PR's head branch when
+# that PR is closed or merged, freeing runners that would otherwise keep
+# going until they finish or hit the 6h ceiling. Concurrency groups
+# (cancel-in-progress on the caller, see the org README) only supersede a
+# run when a NEW push lands on the same ref; nothing supersedes the runs
+# already going when a PR is simply closed/merged with no further push.
+# This reusable closes that gap.
+#
+# The caller triggers it on `pull_request: types: [closed]` so it fires for
+# both merges and plain closes. It cancels by head branch, so its own run
+# (which executes in the base/default-branch context, not on the head ref)
+# is never in the list it cancels.
+
+on:
+  workflow_call:
+    inputs:
+      head_ref:
+        description: >-
+          Head branch of the closed PR whose runs to cancel. Defaults to the
+          caller event's pull_request head ref; override only if the caller
+          resolves it differently.
+        required: false
+        type: string
+        default: ${{ github.event.pull_request.head.ref }}
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # actions: write is required to cancel runs; contents: read so gh can
+      # resolve the repository.
+      actions: write
+      contents: read
+    steps:
+      - name: Cancel in-progress and queued runs on the closed PR's branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ inputs.head_ref }}
+        run: |
+          if [ -z "$HEAD_REF" ]; then
+            echo "No head ref resolved; nothing to cancel."
+            exit 0
+          fi
+          echo "Cancelling active runs on branch: $HEAD_REF"
+          # in_progress and queued are the run statuses that still hold or
+          # are waiting for a runner; completed runs are left untouched.
+          for status in in_progress queued; do
+            ids=$(gh run list \
+              --branch "$HEAD_REF" \
+              --status "$status" \
+              --limit 100 \
+              --json databaseId \
+              --jq '.[].databaseId')
+            for id in $ids; do
+              echo "Cancelling run $id ($status)"
+              gh run cancel "$id" || \
+                echo "Run $id already finished or could not be cancelled"
+            done
+          done
