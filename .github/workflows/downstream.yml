@@ -60,9 +60,9 @@ jobs:
       GROUP: ${{ matrix.downstream.group || 'All' }}
     steps:
       # Base package (the repo calling this reusable) checks out first.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Checkout downstream ${{ matrix.downstream.repo }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: ${{ matrix.downstream.repo }}
           path: downstream
