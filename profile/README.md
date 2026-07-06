@@ -16,22 +16,34 @@ We want to create something equivalent in Julia: a domain-focused ecosystem in t
 
 ## Packages
 
+Package documentation is collected on the [ecosystem site](https://epiaware.org) and its [unified docs browser](https://epiaware.org/docs.html).
+Most packages extend [Distributions.jl](https://github.com/JuliaStats/Distributions.jl) so they share an interface and compose cleanly.
+Empty scaffold repositories are listed as *planned* until they have real, documented functionality.
+
 ### Active
 
 | Package | Description |
 |---|---|
-| [CensoredDistributions.jl](https://github.com/EpiAware/CensoredDistributions.jl) | Handles common biases in epidemiological delay distributions |
+| [CensoredDistributions.jl](https://github.com/EpiAware/CensoredDistributions.jl) | Primary, interval, and double interval censoring for epidemiological delay distributions |
+| [ComposedDistributions.jl](https://github.com/EpiAware/ComposedDistributions.jl) | A verb grammar for n-ary composition over any Distributions.jl distribution |
+| [ConvolvedDistributions.jl](https://github.com/EpiAware/ConvolvedDistributions.jl) | Distribution convolution and shared numerical quadrature for Distributions.jl |
+| [ModifiedDistributions.jl](https://github.com/EpiAware/ModifiedDistributions.jl) | Wrappers that each change one behaviour of a distribution — rescaling, likelihood weighting, hazards, or transforms |
 | [ReparameterisedDistributions.jl](https://github.com/EpiAware/ReparameterisedDistributions.jl) | Alternative parameterisations for Distributions.jl |
-| [EpiAwareR](https://github.com/sbfnk/EpiAwareR) | R interface prototype |
+| [EpiAwarePackageTools.jl](https://github.com/EpiAware/EpiAwarePackageTools.jl) | Shared CI, documentation, quality, and AD-benchmark tooling for the ecosystem |
+| [EpiAwareR](https://github.com/sbfnk/EpiAwareR) | R interface to EpiAware.jl (prototype) |
+
+### In development
+
+| Package | Description |
+|---|---|
+| [ComposableTuringIDModels.jl](https://github.com/EpiAware/ComposableTuringIDModels.jl) | Composable probabilistic infectious disease modelling built on Turing.jl — the ecosystem prototype |
 
 ### Planned
 
 | Package | Description |
 |---|---|
-| [ModifiedDistributions.jl](https://github.com/EpiAware/ModifiedDistributions.jl) | Weighted distributions, Float32-based distributions, and similar |
 | [GenerationTime.jl](https://github.com/EpiAware/GenerationTime.jl) | Representing and estimating generation time distributions |
 | [DEdiseasecomponents.jl](https://github.com/EpiAware/DEdiseasecomponents.jl) | Reusable components for differential equation infectious disease models |
-| [epiaware.github.io](https://github.com/EpiAware/epiaware.github.io) | Centralised ecosystem documentation |
 
 ### Papers
 
