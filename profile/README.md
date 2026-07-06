@@ -29,14 +29,9 @@ Empty scaffold repositories are listed as *planned* until they have real, docume
 | [ConvolvedDistributions.jl](https://github.com/EpiAware/ConvolvedDistributions.jl) | Distribution convolution and shared numerical quadrature for Distributions.jl |
 | [ModifiedDistributions.jl](https://github.com/EpiAware/ModifiedDistributions.jl) | Wrappers that each change one behaviour of a distribution — rescaling, likelihood weighting, hazards, or transforms |
 | [ReparameterisedDistributions.jl](https://github.com/EpiAware/ReparameterisedDistributions.jl) | Alternative parameterisations for Distributions.jl |
+| [ComposableTuringIDModels.jl](https://github.com/EpiAware/ComposableTuringIDModels.jl) | Composable probabilistic infectious disease modelling built on Turing.jl — the ecosystem prototype (early development) |
 | [EpiAwarePackageTools.jl](https://github.com/EpiAware/EpiAwarePackageTools.jl) | Shared CI, documentation, quality, and AD-benchmark tooling for the ecosystem |
 | [EpiAwareR](https://github.com/sbfnk/EpiAwareR) | R interface to EpiAware.jl (prototype) |
-
-### In development
-
-| Package | Description |
-|---|---|
-| [ComposableTuringIDModels.jl](https://github.com/EpiAware/ComposableTuringIDModels.jl) | Composable probabilistic infectious disease modelling built on Turing.jl — the ecosystem prototype |
 
 ### Planned
 
