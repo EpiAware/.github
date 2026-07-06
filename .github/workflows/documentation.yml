@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: '1'
+      timeout_minutes:
+        description: 'Job timeout in minutes for the docs build'
+        required: false
+        type: number
+        default: 45
     secrets:
       DOCUMENTER_KEY:
         required: false
@@ -26,7 +31,8 @@ jobs:
     name: Documentation
     runs-on: ubuntu-latest
     # Docs build/deploy; cap so a hung Documenter run frees the runner.
-    timeout-minutes: 45
+    # Configurable so MCMC-heavy docs (multi-chain sampling + plots) can raise it.
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     env:
       JULIA_NUM_THREADS: ${{ inputs.julia_num_threads }}
     steps:
