@@ -1,0 +1,307 @@
+name: Registrability
+
+# Registration-safety checks for an EpiAware Julia package, so a version that
+# cannot reach the General registry (or that strands an org reverse-dep) is
+# caught at PR time rather than on rejection by the registry.
+#
+# Two independent checks run against the caller's root Project.toml:
+#
+#   1. Registrability — every non-stdlib [deps] entry must exist in the target
+#      registry (default General) with at least one non-yanked version
+#      satisfying the package's own [compat] bound. A dep that is missing
+#      (typically pinned in [sources] to a git rev) means this version cannot
+#      be registered until that dep reaches the registry. This is the failure
+#      that rejected ConvolvedDistributions 0.2.0 (its EpiAwareADTools dep was
+#      unregistered) with nothing in CI to catch it. Fails the job by default
+#      (fail_on_registrability).
+#
+#   2. Org reverse-dependencies — every root Project.toml in the org (default
+#      EpiAware) that lists this package in [deps]/[weakdeps] is checked to see
+#      whether its [compat] for this package admits the version being tested.
+#      A stranded bound is reported as a table; because a breaking bump
+#      legitimately strands a downstream bound, this is a WARNING by default
+#      (fail_on_revdep_break defaults false) — the value is surfacing it at PR
+#      time, not blocking.
+#
+# Read-only: it resolves nothing and installs only RegistryInstances (into a
+# temporary environment) to read the registry. The reverse-dep scan uses the
+# job's GITHUB_TOKEN via gh, which reads the org's public repositories.
+
+on:
+  workflow_call:
+    inputs:
+      julia_version:
+        description: 'Julia version the check runs on'
+        required: false
+        type: string
+        default: '1'
+      org:
+        description: 'GitHub org to scan for reverse-dependencies'
+        required: false
+        type: string
+        default: 'EpiAware'
+      registry:
+        description: 'Registry to check registrability against'
+        required: false
+        type: string
+        default: 'General'
+      fail_on_registrability:
+        description: >-
+          Fail the job when a dependency is unregistrable (unregistered, or no
+          registered version satisfies compat). Default true: an unregistrable
+          version is a hard registration blocker.
+        required: false
+        type: boolean
+        default: true
+      fail_on_revdep_break:
+        description: >-
+          Fail the job when an org reverse-dep's compat does not admit this
+          version. Default false: a breaking bump legitimately strands a
+          downstream bound, so it is surfaced as a warning, not a gate.
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  registrability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # contents: read so the caller repo checks out; the reverse-dep scan
+      # reads other org repos through gh with the job's GITHUB_TOKEN.
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ inputs.julia_version }}
+      - name: Check registrability and org reverse-dependencies
+        shell: julia --color=yes {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RG_ORG: ${{ inputs.org }}
+          RG_REGISTRY: ${{ inputs.registry }}
+          RG_FAIL_ON_REGISTRABILITY: ${{ inputs.fail_on_registrability }}
+          RG_FAIL_ON_REVDEP_BREAK: ${{ inputs.fail_on_revdep_break }}
+        run: |
+          # Read-only registration-safety check. See the workflow header.
+          using Pkg
+          Pkg.activate(; temp = true)
+          Pkg.add(; name = "RegistryInstances", version = "0.1")
+
+          using RegistryInstances
+          using TOML
+          using UUIDs: UUID
+
+          const PKG_DIR = isempty(ARGS) ? "." : ARGS[1]
+          const ORG = get(ENV, "RG_ORG", "EpiAware")
+          const REGISTRY = get(ENV, "RG_REGISTRY", "General")
+
+          _envflag(key, d) = lowercase(get(ENV, key, d)) in ("1", "true")
+          const FAIL_ON_REGISTRABILITY =
+              _envflag("RG_FAIL_ON_REGISTRABILITY", "true")
+          const FAIL_ON_REVDEP_BREAK =
+              _envflag("RG_FAIL_ON_REVDEP_BREAK", "false")
+
+          # Portable across Julia versions: semver_spec moved from Pkg.Types
+          # to Pkg.Versions. A compat string maps to a VersionSpec (`in`).
+          const _semver_spec = isdefined(Pkg, :Versions) &&
+              isdefined(Pkg.Versions, :semver_spec) ?
+              Pkg.Versions.semver_spec : Pkg.Types.semver_spec
+
+          const SUMMARY = String[]
+          summary(line) = push!(SUMMARY, line)
+
+          function flush_summary()
+              path = get(ENV, "GITHUB_STEP_SUMMARY", "")
+              isempty(path) && return
+              open(path, "a") do io
+                  println(io, join(SUMMARY, "\n"))
+              end
+          end
+
+          const PROJECT = TOML.parsefile(joinpath(PKG_DIR, "Project.toml"))
+          const PKG_NAME = get(PROJECT, "name", "")
+          const PKG_VERSION = VersionNumber(get(PROJECT, "version", "0.0.0"))
+          const DEPS = get(PROJECT, "deps", Dict{String, Any}())
+          const COMPAT = get(PROJECT, "compat", Dict{String, Any}())
+          const SOURCES = get(PROJECT, "sources", Dict{String, Any}())
+
+          # Registered, non-yanked versions of `uuid`, or nothing when absent.
+          function registered_versions(reg, uuid::UUID)
+              entry = get(reg.pkgs, uuid, nothing)
+              entry === nothing && return nothing
+              info = registry_info(entry)
+              return [v for (v, vi) in info.version_info if !vi.yanked]
+          end
+
+          function check_registrability()
+              regs = reachable_registries()
+              idx = findfirst(r -> r.name == REGISTRY, regs)
+              idx === nothing &&
+                  error("registry $(REGISTRY) is not installed on the runner")
+              reg = regs[idx]
+
+              errors = String[]
+              summary("## Registrability")
+              summary("")
+              summary("Package `$(PKG_NAME)` v$(PKG_VERSION), " *
+                      "registry `$(REGISTRY)`.")
+              summary("")
+              summary("| Dependency | Status |")
+              summary("| --- | --- |")
+
+              for (name, uuid_str) in sort(collect(DEPS))
+                  uuid = UUID(uuid_str)
+                  # Stdlibs ship with Julia; never registered separately.
+                  Pkg.Types.is_stdlib(uuid) && continue
+                  pinned = haskey(SOURCES, name)
+                  versions = registered_versions(reg, uuid)
+                  if versions === nothing || isempty(versions)
+                      hint = pinned ? " (found `[sources]` pin)" : ""
+                      push!(errors,
+                          "$(name) is unregistered — this version cannot be " *
+                          "registered until $(name) reaches " *
+                          "$(REGISTRY)$(hint)")
+                      summary("| `$(name)` | FAIL — unregistered" *
+                              (pinned ? ", `[sources]` pinned" : "") * " |")
+                      continue
+                  end
+                  bound = get(COMPAT, name, nothing)
+                  if bound === nothing
+                      summary("| `$(name)` | OK — registered, no compat |")
+                      continue
+                  end
+                  spec = _semver_spec(String(bound))
+                  if any(v -> v in spec, versions)
+                      summary("| `$(name)` | OK — compat `$(bound)` " *
+                              "satisfied |")
+                  else
+                      push!(errors,
+                          "no registered version of $(name) satisfies " *
+                          "compat `$(bound)` (registered: " *
+                          join(string.(sort(versions)), ", ") * ")")
+                      summary("| `$(name)` | FAIL — compat `$(bound)` " *
+                              "unsatisfiable |")
+                  end
+              end
+              summary("")
+              return errors
+          end
+
+          # Root Project.toml of `owner/repo` on its default branch, or
+          # nothing when the repo has no root Project.toml / is unreadable.
+          function fetch_project(repo::AbstractString)
+              accept = "Accept: application/vnd.github.raw"
+              cmd = `gh api repos/$(ORG)/$(repo)/contents/Project.toml
+                     -H $(accept)`
+              out = IOBuffer()
+              ok = try
+                  run(pipeline(cmd; stdout = out, stderr = devnull))
+                  true
+              catch
+                  false
+              end
+              ok || return nothing
+              return try
+                  TOML.parse(String(take!(out)))
+              catch
+                  nothing
+              end
+          end
+
+          function list_org_repos()
+              jq = ".[].name"
+              cmd = `gh api --paginate orgs/$(ORG)/repos --jq $(jq)`
+              return try
+                  filter(!isempty, strip.(readlines(cmd)))
+              catch err
+                  @warn "could not list $(ORG) repos; skipping scan" err
+                  String[]
+              end
+          end
+
+          function check_reverse_deps()
+              summary("## Org reverse-dependencies")
+              summary("")
+              repos = list_org_repos()
+              if isempty(repos)
+                  summary("No reverse-dependency scan (org repos " *
+                          "unavailable).")
+                  summary("")
+                  return String[]
+              end
+
+              breaks = String[]
+              rows = Tuple{String, String, Bool}[]
+              for repo in repos
+                  proj = fetch_project(repo)
+                  proj === nothing && continue
+                  # A package is never its own reverse-dependency.
+                  get(proj, "name", "") == PKG_NAME && continue
+                  rdeps = merge(get(proj, "deps", Dict{String, Any}()),
+                      get(proj, "weakdeps", Dict{String, Any}()))
+                  haskey(rdeps, PKG_NAME) || continue
+                  bound = get(get(proj, "compat", Dict{String, Any}()),
+                      PKG_NAME, nothing)
+                  admits = bound === nothing ? true :
+                           PKG_VERSION in _semver_spec(String(bound))
+                  push!(rows,
+                      (repo, bound === nothing ? "(none)" : String(bound),
+                          admits))
+                  admits || push!(breaks,
+                      "$(ORG)/$(repo) compat `$(bound)` does not admit " *
+                      "$(PKG_NAME) v$(PKG_VERSION)")
+              end
+
+              if isempty(rows)
+                  summary("No org repositories depend on `$(PKG_NAME)`.")
+                  summary("")
+                  return String[]
+              end
+
+              summary("Version under test: `$(PKG_NAME)` v$(PKG_VERSION).")
+              summary("")
+              summary("| Reverse-dep | Its compat | Admits this version |")
+              summary("| --- | --- | --- |")
+              for (repo, bound, admits) in sort(rows)
+                  summary("| `$(ORG)/$(repo)` | `$(bound)` | " *
+                          (admits ? "yes" : "no") * " |")
+              end
+              summary("")
+              return breaks
+          end
+
+          function main()
+              reg_errors = check_registrability()
+              revdep_breaks = check_reverse_deps()
+              flush_summary()
+              println(join(SUMMARY, "\n"))
+
+              failed = false
+              if !isempty(reg_errors)
+                  printstyled("\nRegistrability errors:\n";
+                      color = :red, bold = true)
+                  foreach(e -> println("  - ", e), reg_errors)
+                  FAIL_ON_REGISTRABILITY && (failed = true)
+              else
+                  printstyled(
+                      "\nRegistrability: all dependencies registrable.\n";
+                      color = :green)
+              end
+
+              if !isempty(revdep_breaks)
+                  printstyled("\nReverse-dependency breaks:\n";
+                      color = :yellow, bold = true)
+                  foreach(b -> println("  - ", b), revdep_breaks)
+                  FAIL_ON_REVDEP_BREAK && (failed = true)
+              else
+                  printstyled("\nReverse-deps: no stranded org bounds.\n";
+                      color = :green)
+              end
+
+              failed && exit(1)
+              return nothing
+          end
+
+          main()
