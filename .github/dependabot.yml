@@ -11,6 +11,14 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Bundle every github-actions bump into a single grouped PR per run,
+    # rather than one PR per workflow file. This repo hosts the reusable
+    # workflows the rest of the org pins, so an ungrouped bump here is
+    # what fans out across every downstream repo (#249).
+    groups:
+      github-actions:
+        patterns:
+          - "*"
     open-pull-requests-limit: 10
     reviewers:
       - "seabbs"
