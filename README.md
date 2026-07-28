@@ -36,6 +36,7 @@ caller and overrides only where it genuinely differs.
 | `ad.yml` | AD gradient suite, internally matrixed over a backend list | `backends` (default: the six EpiAware backends below), `julia-version`, `test_project` (`test/ad`), `coverage_directories` (`src,ext`), `fail_fast` (`false`) |
 | `ad-backend.yml` | Single-backend AD runner (one check per caller job) | `name`, `tag`, `flag`, `julia-version`, `test_project`, `coverage_directories` |
 | `downstream.yml` | Reverse-dependency tests (opt-in), internally matrixed over a downstream list | `downstreams` (`[]`), `julia_version`, `os`, `coverage` |
+| `release-nudge.yml` | Opens/refreshes a single issue when `main` has unreleased changes | `julia_version`, `registry` (`General`), `branch` (`main`), `label` (`release-nudge`), `stale_days` (`14`) |
 | `major-version-tag.yml` | Maintains the moving `@v1` tag (runs here) | — |
 
 `ad.yml` matrixes over its `backends` input internally
@@ -109,6 +110,35 @@ the caller before it has any registered downstreams. Each entry takes
 downstreams: >-
   [{"repo":"EpiAware/EpiAwarePackageTools.jl","group":"All"}]
 ```
+
+### Release nudge
+
+`release-nudge.yml` runs on a schedule (the caller sets the cron) and on
+`workflow_dispatch`. It compares `Project.toml`'s version and the
+commits on `branch` since the latest GitHub release/tag (and,
+best-effort, the version registered in the `registry` input's Julia
+registry) against `main`. When there are unreleased commits it opens
+(or refreshes) a single issue labelled `label`, telling a maintainer
+the released vs `Project.toml` version, how many commits are unreleased
+with a compare link and a short recent-commit list, whether a version
+bump is still needed or only registration is outstanding, and the
+concrete `/version`/`/register` steps. When nothing is unreleased it
+closes any open nudge issue instead and stays silent.
+
+An open nudge issue is never edited in place: it embeds its computed
+state (`Project.toml` version + unreleased commit count) in an HTML
+comment, and a run that finds the state has changed, or finds the
+issue has sat open for at least `stale_days` days regardless, closes
+it with a short "superseded" comment and opens a fresh one. This keeps
+the issue honest without an unbounded edit history.
+
+The issue body is built so it can never contain a literal `@`: any
+repo-derived text that could carry an unexpected mention (commit
+subject lines, and the release tag name itself) has every `@` replaced
+before it reaches the body, and the process to trigger registration is
+described by name (the Register workflow, the `/register` slash
+command) rather than by writing out the registry bot's handle
+anywhere.
 
 ### Versioning
 

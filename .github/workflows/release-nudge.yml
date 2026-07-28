@@ -1,0 +1,535 @@
+name: Release Nudge
+
+# Nudges a maintainer when a package's default branch has changes that are
+# not yet released. Compares Project.toml's version and the commits on
+# `branch` since the latest GitHub release/tag (and, best-effort, the
+# version registered in the Julia General registry) and, when unreleased
+# changes exist, opens or refreshes a single tracking issue explaining
+# what to do. When nothing is unreleased it closes any open nudge issue
+# and does nothing else, so a healthy package gets no noise.
+#
+# MENTION SAFETY: the issue body must never contain a literal '@'
+# character, because that text would itself fire a notification or (for
+# the registry bot's handle specifically) trigger registration. Two
+# kinds of repo content could carry attacker/contributor-chosen text
+# into the body: commit subject lines, and the name of the latest
+# release tag (a git ref name may legally contain '@'). Both are passed
+# through `strip_mentions` before they can reach the body text — see
+# `recent_subjects` and the `tag_display` variable in `main` below. The
+# *raw*, unsanitised tag is still used for the actual git commands
+# (counting/listing commits), since that text never itself reaches the
+# body — only the hashes and already-sanitised subjects it yields do.
+# Everything else in the body is fixed prose that names the Register
+# workflow and the `/register` slash command instead of any handle, and
+# no handle is written anywhere in this file either (not even the
+# registry bot's own handle, not even inside a code span).
+#
+# STALENESS: an open nudge issue is closed (with an explanatory comment)
+# and replaced by a fresh one, rather than edited in place, when either:
+#   (a) the state embedded in its body — the Project.toml version and
+#       the unreleased commit count — no longer matches what this run
+#       just computed, i.e. more commits landed or the version changed.
+#       The best-effort registry lookup deliberately does NOT feed this
+#       comparison: it is a network call that can flip between "known"
+#       and "unknown" purely from transient flakiness, and folding that
+#       into the state would trigger a close+recreate cycle with no
+#       real change in the repo; or
+#   (b) the issue has been open at least `stale_days` days regardless of
+#       whether the state changed, so a nudge can never sit stale
+#       indefinitely just because nothing else happened to touch it.
+# See the `<!-- release-nudge-state: ... -->` marker embedded in the
+# issue body and the `stale` check in the script below.
+
+on:
+  workflow_call:
+    inputs:
+      julia_version:
+        description: 'Julia version used to read Project.toml and the registry'
+        required: false
+        type: string
+        default: '1'
+      registry:
+        description: 'Registry name to check the released version against'
+        required: false
+        type: string
+        default: 'General'
+      branch:
+        description: >-
+          Default branch to check for unreleased commits. Must match the
+          ref the workflow actually checks out (the repo's default
+          branch, for a schedule/workflow_dispatch run with no ref
+          override).
+        required: false
+        type: string
+        default: 'main'
+      label:
+        description: 'Label applied to (and used to find) the nudge issue'
+        required: false
+        type: string
+        default: 'release-nudge'
+      stale_days:
+        description: >-
+          Days an open nudge issue may sit untouched before it is closed
+          and replaced with a fresh one, even when the unreleased state
+          has not changed. See the STALENESS note above.
+        required: false
+        type: number
+        default: 14
+
+jobs:
+  release-nudge:
+    runs-on: ubuntu-latest
+    # Full-history checkout + a registry lookup can be slow on a big repo;
+    # cap so a hung run frees the runner.
+    timeout-minutes: 20
+    permissions:
+      # issues: write to create/comment/close the nudge issue; contents:
+      # read to check out full history/tags and read Project.toml.
+      issues: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history + tags: needed to count and list commits since
+          # the latest release tag.
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ inputs.julia_version }}
+      - name: Check for unreleased changes and nudge maintainers
+        shell: julia --color=yes {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RN_REGISTRY: ${{ inputs.registry }}
+          RN_BRANCH: ${{ inputs.branch }}
+          RN_LABEL: ${{ inputs.label }}
+          RN_STALE_DAYS: ${{ inputs.stale_days }}
+        run: |
+          using Pkg
+          using TOML
+          using Dates
+          using UUIDs: UUID
+
+          const REPO = ENV["GH_REPO"]
+          const BRANCH = get(ENV, "RN_BRANCH", "main")
+          const LABEL = get(ENV, "RN_LABEL", "release-nudge")
+          const REGISTRY = get(ENV, "RN_REGISTRY", "General")
+          const STALE_DAYS = parse(Int, get(ENV, "RN_STALE_DAYS", "14"))
+
+          # Never let a literal '@' reach the issue body: a contributor's
+          # handle sitting in a commit subject (or, worse, a bot handle)
+          # would otherwise render as a real mention or trigger. Every
+          # piece of repo-derived text below is routed through this
+          # before it is spliced into the title/body.
+          strip_mentions(s::AbstractString) = replace(s, "@" => "(at)")
+
+          gh(args...) = readchomp(`gh $(collect(String, args))`)
+
+          const PROJECT = TOML.parsefile("Project.toml")
+          const PKG_NAME = get(PROJECT, "name", "package")
+          const PROJECT_VERSION =
+              VersionNumber(get(PROJECT, "version", "0.0.0"))
+
+          # Best-effort install of the registry reader. `using` cannot
+          # appear inside a function body, so this has to happen here at
+          # top level; `registry_version` below just checks the flag.
+          # Never fatal: a network hiccup or a runner without registry
+          # access should degrade to "unknown", not fail the job.
+          const REG_AVAILABLE = try
+              Pkg.activate(; temp = true)
+              Pkg.add(; name = "RegistryInstances", version = "0.1")
+              true
+          catch err
+              @warn "could not install RegistryInstances" exception = err
+              false
+          end
+          if REG_AVAILABLE
+              using RegistryInstances
+          end
+
+          # The highest vX.Y.Z GitHub release/tag, or `nothing` when the
+          # package has never been released. Tries the latest published
+          # GitHub Release first, then falls back to the highest matching
+          # Git tag (a release cut without going through GitHub Releases).
+          # NOTE on the raw tag returned here: this text is used both as
+          # a real git ref (for commit counting/listing) and, once run
+          # through `strip_mentions` by the caller, for display in the
+          # issue body — see the MENTION SAFETY note above.
+          function latest_tag()
+              out = try
+                  gh("api", "repos/$(REPO)/releases/latest",
+                      "--jq", ".tag_name")
+              catch
+                  ""
+              end
+              isempty(out) || return out
+              # Only vX.Y.Z tags match: intentional, not an oversight.
+              # This whole workflow is built around Julia TagBot's
+              # `vX.Y.Z` tagging convention (matching the Julia General
+              # registry ecosystem), so bare `X.Y.Z` tags are not
+              # expected here.
+              tags = try
+                  # Quoted: Julia's backtick literal rejects bare glob
+                  # characters ('*') unquoted, it does not glob-expand
+                  # them itself -- `git` receives the literal pattern.
+                  readlines(`git tag --list "v*.*.*"`)
+              catch
+                  String[]
+              end
+              parsed = [(t, tryparse(VersionNumber, lstrip(t, 'v')))
+                        for t in tags]
+              filter!(p -> p[2] !== nothing, parsed)
+              isempty(parsed) && return nothing
+              return first(sort(parsed; by = p -> p[2], rev = true))[1]
+          end
+
+          # Highest non-yanked version registered in `REGISTRY`, or
+          # `nothing` when it cannot be determined (unregistered, the
+          # installer above failed, or the lookup itself fails).
+          # Best-effort: never fatal to the run.
+          function registry_version()
+              REG_AVAILABLE || return nothing
+              try
+                  uuid = UUID(PROJECT["uuid"])
+                  regs = reachable_registries()
+                  idx = findfirst(r -> r.name == REGISTRY, regs)
+                  idx === nothing && return nothing
+                  entry = get(regs[idx].pkgs, uuid, nothing)
+                  entry === nothing && return nothing
+                  info = registry_info(entry)
+                  versions = [v for (v, vi) in info.version_info
+                              if !vi.yanked]
+                  isempty(versions) && return nothing
+                  return maximum(versions)
+              catch err
+                  @warn "could not resolve $(REGISTRY) version" exception =
+                      err
+                  return nothing
+              end
+          end
+
+          # Number of commits on HEAD since `tag` (all of HEAD when there
+          # is no prior tag, i.e. the package has never been released).
+          function commits_since(tag)
+              n = try
+                  tag === nothing ?
+                  readchomp(`git rev-list --count HEAD`) :
+                  readchomp(`git rev-list --count $(tag)..HEAD`)
+              catch
+                  "0"
+              end
+              return something(tryparse(Int, n), 0)
+          end
+
+          # Up to `n` (hash, sanitised subject) pairs since `tag` (or the
+          # `n` most recent commits when there is no prior tag).
+          function recent_subjects(tag, n::Int = 10)
+              rangespec = tag === nothing ? String[] : ["$(tag)..HEAD"]
+              cmd = `git log --pretty=format:%h%x09%s -n $(string(n))
+                     $(rangespec)`
+              out = try
+                  readchomp(cmd)
+              catch
+                  ""
+              end
+              isempty(out) && return Tuple{String, String}[]
+              rows = Tuple{String, String}[]
+              for line in split(out, '\n'; keepempty = false)
+                  parts = split(line, '\t'; limit = 2)
+                  length(parts) == 2 || continue
+                  push!(rows, (parts[1], strip_mentions(parts[2])))
+              end
+              return rows
+          end
+
+          best_version(a, b) = a === nothing ? b : (b === nothing ? a :
+                                                      max(a, b))
+
+          # Make sure the tracking label exists so `gh issue create`
+          # never fails just because the repo has not used it before.
+          # Idempotent: --force updates rather than errors if it already
+          # exists.
+          function ensure_label()
+              try
+                  gh("label", "create", LABEL, "--repo", REPO,
+                      "--color", "0E8A16", "--description",
+                      "Nudge to release unreleased package changes",
+                      "--force")
+              catch err
+                  @warn "could not ensure the nudge label exists" exception =
+                      err
+              end
+          end
+
+          function close_issue(number::Int, comment::AbstractString)
+              gh("issue", "comment", string(number), "--repo", REPO,
+                  "--body", String(comment))
+              gh("issue", "close", string(number), "--repo", REPO)
+              return nothing
+          end
+
+          # Numbers of open, LABEL-tagged issues that this workflow
+          # itself is responsible for -- identified either by the
+          # issue author being a bot (the normal case, using the
+          # default `GH_TOKEN`; `gh`'s own JSON serialises this as
+          # `.author.is_bot == true`, NOT a bare `"github-actions"`
+          # login -- verified live against `gh issue list --json
+          # number,author,body --jq ...`, the exact call made below,
+          # which returns `"login":"app/github-actions"` for a
+          # GITHUB_TOKEN-authored issue) or by the *full*
+          # `<!-- release-nudge-state: ... -->` HTML-comment marker
+          # already being present in the body (belt and braces, in
+          # case a non-bot token is ever used to create the issue).
+          # The body check intentionally mirrors `STATE_RE` below
+          # rather than a bare `release-nudge-state:` substring, so a
+          # human quoting the marker text in prose (e.g. this
+          # workflow's own source, or a bug report pasting a nudge
+          # issue's body) is not misidentified as a tracked issue
+          # purely by that weaker check, if the author check is ever
+          # bypassed. An open issue that carries LABEL but neither
+          # signal is left untouched: it was tagged by a human, and
+          # this workflow must never silently adopt or close someone
+          # else's issue.
+          function tracked_issue_numbers()
+              jq_expr = ".[] | select((.author.is_bot == true) or " *
+                  "(.body | test(\"<!-- release-nudge-state: .*? " *
+                  "-->\"))) | .number"
+              out = try
+                  gh("issue", "list", "--repo", REPO, "--label", LABEL,
+                      "--state", "open", "--json", "number,author,body",
+                      "--jq", jq_expr)
+              catch
+                  ""
+              end
+              isempty(out) && return Int[]
+              return [parse(Int, l)
+                      for l in split(out, '\n'; keepempty = false)]
+          end
+
+          # The single tracked nudge issue's number, or `nothing`. If
+          # more than one open issue is tracked (e.g. a duplicate that
+          # slipped past the concurrency guard), the most recently
+          # created one is kept and the rest are closed as duplicates so
+          # they cannot silently pile up.
+          function existing_issue()
+              numbers = tracked_issue_numbers()
+              isempty(numbers) && return nothing
+              keep = maximum(numbers)
+              for n in numbers
+                  n == keep && continue
+                  close_issue(n,
+                      "Duplicate release-nudge issue; consolidating " *
+                      "into #$(keep).")
+                  println("Closed duplicate nudge issue #$(n).")
+              end
+              return keep
+          end
+
+          function create_issue(title::AbstractString,
+                  body::AbstractString)
+              path, io = mktemp()
+              write(io, body)
+              close(io)
+              gh("issue", "create", "--repo", REPO, "--title",
+                  String(title), "--label", LABEL, "--body-file", path)
+              rm(path; force = true)
+              return nothing
+          end
+
+          function parse_gh_time(s::AbstractString)
+              return DateTime(replace(s, "Z" => ""))
+          end
+
+          # `tag` here must already be display-safe (sanitised via
+          # `strip_mentions` by the caller): it is spliced directly into
+          # `since_desc`, `released_str`, and `compare_line` below. Same
+          # for `subjects`, which `recent_subjects` already sanitises
+          # per-entry -- neither is re-sanitised here so that a caller
+          # forgetting to sanitise `tag` is a visible bug, not silently
+          # masked.
+          function build_body(tag, subjects, tag_version, reg_version,
+                  released_version, n_commits, bump_needed, state)
+              since_desc = tag === nothing ?
+                  "the first commit (no release found yet)" :
+                  "the last release (tag `$(tag)`)"
+
+              released_str = if tag_version === nothing &&
+                                 reg_version === nothing
+                  "none found (no prior release or registry entry)"
+              elseif tag_version !== nothing && reg_version !== nothing &&
+                     tag_version != reg_version
+                  "$(released_version) (tag `$(tag)`; $(REGISTRY) " *
+                  "registry $(reg_version))"
+              elseif tag_version !== nothing
+                  "$(tag_version) (tag `$(tag)`)"
+              else
+                  "$(reg_version) ($(REGISTRY) registry; no matching " *
+                  "Git tag)"
+              end
+
+              registry_note = reg_version === nothing ?
+                  " _Could not determine the version registered in " *
+                  "the $(REGISTRY) registry (unregistered, or the " *
+                  "lookup failed); showing Git tag information only._" :
+                  ""
+
+              compare_line = tag === nothing ? "" :
+                  "Compare: https://github.com/$(REPO)/compare/" *
+                  "$(tag)...$(BRANCH)"
+
+              recent_line = isempty(subjects) ? "" :
+                  "Most recent commits:\n" *
+                  join(("- `$(h)` " * s for (h, s) in subjects), "\n")
+
+              bump_line = bump_needed ?
+                  "A version bump is still needed before this can be " *
+                  "registered." :
+                  "`Project.toml` is already ahead of the released " *
+                  "version; only registration is outstanding."
+
+              docs_path = "docs/src/developer/release-process.md"
+              docs_line = isfile(docs_path) ?
+                  "See the release process docs: " *
+                  "https://github.com/$(REPO)/blob/$(BRANCH)/" *
+                  "$(docs_path)" : ""
+
+              steps_text =
+                  "1. If a version bump is still needed, comment the " *
+                  "slash command `/version patch`, `/version minor`, " *
+                  "or `/version major` (whichever applies) on the " *
+                  "pull request that should ship next. The Version On " *
+                  "Demand workflow commits the bump onto that PR " *
+                  "branch.\n" *
+                  "2. Update `NEWS.md` with a summary of the " *
+                  "unreleased changes, then merge that pull request " *
+                  "into `$(BRANCH)`. The Register workflow and the " *
+                  "`/register` slash command always act on " *
+                  "`$(BRANCH)`'s current HEAD commit, never on a PR " *
+                  "branch, so the bump must land on `$(BRANCH)` " *
+                  "first.\n" *
+                  "3. Once `$(BRANCH)` carries the version to " *
+                  "release, either comment the slash command " *
+                  "`/register` on an issue or pull request, or run " *
+                  "the Register workflow manually from the Actions tab."
+
+              sections = String[]
+              push!(sections, "## Release nudge")
+              push!(sections,
+                  "**Released version:** $(released_str)$(registry_note)")
+              push!(sections,
+                  "**`Project.toml` version:** $(PROJECT_VERSION)")
+              push!(sections,
+                  "`$(BRANCH)` has $(n_commits) commit(s) since " *
+                  "$(since_desc) that are not yet released.")
+              isempty(compare_line) || push!(sections, compare_line)
+              isempty(recent_line) || push!(sections, recent_line)
+              push!(sections,
+                  "### Does the version need bumping?\n\n$(bump_line)")
+              push!(sections, "### What to do\n\n" * steps_text)
+              isempty(docs_line) || push!(sections, docs_line)
+              push!(sections, "<!-- release-nudge-state: $(state) -->")
+
+              return join(sections, "\n\n")
+          end
+
+          const STATE_RE = r"<!-- release-nudge-state: (.*?) -->"
+
+          function main()
+              # `tag` (raw) drives the actual git commands below and is
+              # never itself put in the body. `tag_display` is the only
+              # form allowed to reach body text -- see MENTION SAFETY.
+              tag = latest_tag()
+              tag_display = tag === nothing ? nothing : strip_mentions(tag)
+              tag_version = tag === nothing ? nothing :
+                  tryparse(VersionNumber, lstrip(tag, 'v'))
+              reg_version = registry_version()
+              released_version = best_version(tag_version, reg_version)
+
+              n_commits = commits_since(tag)
+              subjects = recent_subjects(tag)
+              has_unreleased = n_commits > 0
+
+              ensure_label()
+              existing = existing_issue()
+
+              if !has_unreleased
+                  println("No unreleased changes on $(BRANCH); " *
+                          "nothing to do.")
+                  if existing !== nothing
+                      close_issue(existing,
+                          "No longer any unreleased changes on " *
+                          "`$(BRANCH)`; closing this nudge. A fresh " *
+                          "issue opens automatically if that changes.")
+                      println("Closed now-resolved nudge issue " *
+                              "#$(existing).")
+                  end
+                  return
+              end
+
+              bump_needed = released_version !== nothing &&
+                  PROJECT_VERSION <= released_version
+              # Deliberately excludes the best-effort registry lookup --
+              # see the STALENESS note at the top of this file.
+              state = "$(PROJECT_VERSION)|$(n_commits)"
+
+              title = "Release nudge: $(PKG_NAME) has $(n_commits) " *
+                  "unreleased commit(s) on $(BRANCH)"
+              body = build_body(tag_display, subjects, tag_version,
+                  reg_version, released_version, n_commits, bump_needed,
+                  state)
+
+              if existing === nothing
+                  create_issue(title, body)
+                  println("Opened a new release-nudge issue.")
+                  return
+              end
+
+              prev_body = try
+                  gh("issue", "view", string(existing), "--repo", REPO,
+                      "--json", "body", "--jq", ".body")
+              catch
+                  ""
+              end
+              prev_created = try
+                  gh("issue", "view", string(existing), "--repo", REPO,
+                      "--json", "createdAt", "--jq", ".createdAt")
+              catch
+                  ""
+              end
+              m = match(STATE_RE, prev_body)
+              prev_state = m === nothing ? nothing : m.captures[1]
+              age_days = isempty(prev_created) ? Inf :
+                  Dates.value(now() - parse_gh_time(prev_created)) /
+                  86_400_000
+
+              state_changed = prev_state === nothing || prev_state != state
+              stale = state_changed || age_days >= STALE_DAYS
+
+              if stale
+                  reason = state_changed ?
+                      "the unreleased state has changed since this " *
+                      "issue opened" :
+                      isfinite(age_days) ?
+                      "this issue has been open for " *
+                      "$(round(Int, age_days)) days without action " *
+                      "(staleness window: $(STALE_DAYS) days)" :
+                      "this issue's age could not be determined and " *
+                      "the staleness window ($(STALE_DAYS) days) " *
+                      "was assumed exceeded"
+                  close_issue(existing,
+                      "Superseded by a fresh release nudge: " *
+                      "$(reason). See the new issue for the current " *
+                      "status.")
+                  create_issue(title, body)
+                  println("Closed stale issue #$(existing); opened " *
+                          "a new one.")
+              else
+                  println("Existing nudge issue #$(existing) is " *
+                          "still current; nothing to do.")
+              end
+              return
+          end
+
+          main()
