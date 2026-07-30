@@ -71,7 +71,7 @@ jobs:
       # reads other org repos through gh with the job's GITHUB_TOKEN.
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ inputs.julia_version }}
