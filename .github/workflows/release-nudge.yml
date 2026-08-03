@@ -110,7 +110,8 @@ jobs:
           RN_LABEL: ${{ inputs.label }}
           RN_STALE_DAYS: ${{ inputs.stale_days }}
           # Presence only, never the key itself.
-          RN_HAS_DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY != '' && 'true' || 'false' }}
+          RN_HAS_DOCUMENTER_KEY:
+            ${{ secrets.DOCUMENTER_KEY != '' && 'true' || 'false' }}
         run: |
           using Pkg
           using TOML
@@ -437,10 +438,13 @@ jobs:
               push!(sections, "### What to do\n\n" * steps_text)
               HAS_DOCUMENTER_KEY || push!(sections,
                   "### No `DOCUMENTER_KEY`\n\n" *
-                  "This repository has no `DOCUMENTER_KEY` secret, so TagBot " *
-                  "will tag with the Actions app token. GitHub raises no push " *
+                  "This repository has no `DOCUMENTER_KEY` secret, so " *
+                  "TagBot " *
+                  "will tag with the Actions app token. GitHub raises no " *
+                  "push " *
                   "event for such a tag, so the release will publish no " *
-                  "versioned docs, and a tagged commit that touches a workflow " *
+                  "versioned docs, and a tagged commit that touches a " *
+                  "workflow " *
                   "file is refused outright. Add the deploy key before " *
                   "releasing: https://epiawarepackagetools.epiaware.org/dev/" *
                   "getting-started/infrastructure#documenter-key")
