@@ -36,7 +36,7 @@ caller and overrides only where it genuinely differs.
 | `ad.yml` | AD gradient suite, internally matrixed over a backend list | `backends` (default: the six EpiAware backends below), `julia-version`, `test_project` (`test/ad`), `coverage_directories` (`src,ext`), `fail_fast` (`false`) |
 | `ad-backend.yml` | Single-backend AD runner (one check per caller job) | `name`, `tag`, `flag`, `julia-version`, `test_project`, `coverage_directories` |
 | `downstream.yml` | Reverse-dependency tests (opt-in), internally matrixed over a downstream list | `downstreams` (`[]`), `julia_version`, `os`, `coverage` |
-| `release-nudge.yml` | Opens/refreshes a single issue when `main` has unreleased changes | `julia_version`, `registry` (`General`), `branch` (`main`), `label` (`release-nudge`), `stale_days` (`14`) |
+| `release-nudge.yml` | Opens/refreshes a single issue when `main` has unreleased changes | `julia_version`, `registry` (`General`), `branch` (`main`), `label` (`release-nudge`), `stale_days` (`14`); optional secret `DOCUMENTER_KEY` |
 | `major-version-tag.yml` | Maintains the moving `@v1` tag (runs here) | — |
 
 `ad.yml` matrixes over its `backends` input internally
@@ -131,6 +131,14 @@ comment, and a run that finds the state has changed, or finds the
 issue has sat open for at least `stale_days` days regardless, closes
 it with a short "superseded" comment and opens a fresh one. This keeps
 the issue honest without an unbounded edit history.
+
+The issue also warns when the repository has no `DOCUMENTER_KEY`
+secret. Without it TagBot tags with the Actions app token, GitHub
+raises no push event for that tag, and the release publishes no
+versioned docs. Only the secret's presence is read, never its value,
+and the check relies on the caller passing `secrets: inherit` — a
+caller that forwards nothing gets the warning whether or not the key
+exists.
 
 The issue body is built so it can never contain a literal `@`: any
 repo-derived text that could carry an unexpected mention (commit
