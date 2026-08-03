@@ -6,22 +6,14 @@ name: Registrability
 #
 # Two independent checks run against the caller's root Project.toml:
 #
-#   1. Registrability — every non-stdlib [deps] AND [weakdeps] entry must
-#      exist in the target registry (default General). RegistryTools'
-#      check_deps! walks pkg.deps and pkg.weakdeps together and raises
-#      :dependency_not_found for either kind of missing dependency, which is
-#      in the default error set register() uses, so an unregistered weakdep
-#      fails registration just like an unregistered dep. A dep is additionally
-#      required to have at least one non-yanked version satisfying the
-#      package's own [compat] bound; a weakdep's compat bound is checked too,
-#      but only as a warning, because AutoMerge's guideline_compat_for_all_deps
-#      reads Deps.toml/Compat.toml and never WeakDeps.toml/WeakCompat.toml, so
-#      an unsatisfiable weakdep compat bound is not itself a registration
-#      blocker. A missing dep/weakdep (typically pinned in [sources] to a git
-#      rev) means this version cannot be registered until it reaches the
-#      registry. This is the failure that rejected ConvolvedDistributions
-#      0.2.0 (its EpiAwareADTools dep was unregistered) with nothing in CI to
-#      catch it. Fails the job by default (fail_on_registrability).
+#   1. Registrability — every non-stdlib [deps] and [weakdeps] entry must
+#      exist in the target registry (default General): RegistryTools'
+#      check_deps! walks both and raises :dependency_not_found for either.
+#      Deps must also have a version satisfying [compat]; for weakdeps that
+#      is only a warning, since AutoMerge never reads WeakCompat.toml. A
+#      missing entry (typically a [sources] git pin) blocks registration —
+#      the failure that rejected ConvolvedDistributions 0.2.0 with nothing in
+#      CI to catch it. Fails the job by default (fail_on_registrability).
 #
 #   2. Org reverse-dependencies — every root Project.toml in the org (default
 #      EpiAware) that lists this package in [deps]/[weakdeps] is checked to see
@@ -161,14 +153,8 @@ jobs:
               summary("| Kind | Dependency | Status |")
               summary("| --- | --- | --- |")
 
-              # dep and weakdep entries are checked the same way for
-              # existence (both are walked by RegistryTools'
-              # check_deps!/findpackageerror! at registration time), but a
-              # weakdep's own [compat] bound is only checked as a warning:
-              # AutoMerge's guideline_compat_for_all_deps reads
-              # Deps.toml/Compat.toml, never WeakDeps.toml/WeakCompat.toml,
-              # so an unsatisfiable weakdep compat bound is not a
-              # registration blocker.
+              # Existence is an error for both kinds; an unsatisfiable
+              # compat bound is an error for deps, a warning for weakdeps.
               for (kind, table) in (("dep", DEPS), ("weakdep", WEAKDEPS))
                   for (name, uuid_str) in sort(collect(table))
                       uuid = UUID(uuid_str)
