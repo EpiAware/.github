@@ -6,14 +6,14 @@ name: Registrability
 #
 # Two independent checks run against the caller's root Project.toml:
 #
-#   1. Registrability — every non-stdlib [deps] entry must exist in the target
-#      registry (default General) with at least one non-yanked version
-#      satisfying the package's own [compat] bound. A dep that is missing
-#      (typically pinned in [sources] to a git rev) means this version cannot
-#      be registered until that dep reaches the registry. This is the failure
-#      that rejected ConvolvedDistributions 0.2.0 (its EpiAwareADTools dep was
-#      unregistered) with nothing in CI to catch it. Fails the job by default
-#      (fail_on_registrability).
+#   1. Registrability — every non-stdlib [deps] and [weakdeps] entry must
+#      exist in the target registry (default General): RegistryTools'
+#      check_deps! walks both and raises :dependency_not_found for either.
+#      Deps must also have a version satisfying [compat]; for weakdeps that
+#      is only a warning, since AutoMerge never reads WeakCompat.toml. A
+#      missing entry (typically a [sources] git pin) blocks registration —
+#      the failure that rejected ConvolvedDistributions 0.2.0 with nothing in
+#      CI to catch it. Fails the job by default (fail_on_registrability).
 #
 #   2. Org reverse-dependencies — every root Project.toml in the org (default
 #      EpiAware) that lists this package in [deps]/[weakdeps] is checked to see
@@ -124,6 +124,7 @@ jobs:
           const PKG_NAME = get(PROJECT, "name", "")
           const PKG_VERSION = VersionNumber(get(PROJECT, "version", "0.0.0"))
           const DEPS = get(PROJECT, "deps", Dict{String, Any}())
+          const WEAKDEPS = get(PROJECT, "weakdeps", Dict{String, Any}())
           const COMPAT = get(PROJECT, "compat", Dict{String, Any}())
           const SOURCES = get(PROJECT, "sources", Dict{String, Any}())
 
@@ -143,50 +144,69 @@ jobs:
               reg = regs[idx]
 
               errors = String[]
+              warnings = String[]
               summary("## Registrability")
               summary("")
               summary("Package `$(PKG_NAME)` v$(PKG_VERSION), " *
                       "registry `$(REGISTRY)`.")
               summary("")
-              summary("| Dependency | Status |")
-              summary("| --- | --- |")
+              summary("| Kind | Dependency | Status |")
+              summary("| --- | --- | --- |")
 
-              for (name, uuid_str) in sort(collect(DEPS))
-                  uuid = UUID(uuid_str)
-                  # Stdlibs ship with Julia; never registered separately.
-                  Pkg.Types.is_stdlib(uuid) && continue
-                  pinned = haskey(SOURCES, name)
-                  versions = registered_versions(reg, uuid)
-                  if versions === nothing || isempty(versions)
-                      hint = pinned ? " (found `[sources]` pin)" : ""
-                      push!(errors,
-                          "$(name) is unregistered — this version cannot be " *
-                          "registered until $(name) reaches " *
-                          "$(REGISTRY)$(hint)")
-                      summary("| `$(name)` | FAIL — unregistered" *
-                              (pinned ? ", `[sources]` pinned" : "") * " |")
-                      continue
-                  end
-                  bound = get(COMPAT, name, nothing)
-                  if bound === nothing
-                      summary("| `$(name)` | OK — registered, no compat |")
-                      continue
-                  end
-                  spec = _semver_spec(String(bound))
-                  if any(v -> v in spec, versions)
-                      summary("| `$(name)` | OK — compat `$(bound)` " *
-                              "satisfied |")
-                  else
-                      push!(errors,
-                          "no registered version of $(name) satisfies " *
-                          "compat `$(bound)` (registered: " *
-                          join(string.(sort(versions)), ", ") * ")")
-                      summary("| `$(name)` | FAIL — compat `$(bound)` " *
-                              "unsatisfiable |")
+              # Existence is an error for both kinds; an unsatisfiable
+              # compat bound is an error for deps, a warning for weakdeps.
+              for (kind, table) in (("dep", DEPS), ("weakdep", WEAKDEPS))
+                  for (name, uuid_str) in sort(collect(table))
+                      uuid = UUID(uuid_str)
+                      # Stdlibs ship with Julia; never registered separately.
+                      Pkg.Types.is_stdlib(uuid) && continue
+                      pinned = haskey(SOURCES, name)
+                      versions = registered_versions(reg, uuid)
+                      if versions === nothing || isempty(versions)
+                          hint = pinned ? " (found `[sources]` pin)" : ""
+                          push!(errors,
+                              "$(name) ($(kind)) is unregistered — this " *
+                              "version cannot be registered until " *
+                              "$(name) reaches $(REGISTRY)$(hint)")
+                          summary("| $(kind) | `$(name)` | " *
+                                  "FAIL — unregistered" *
+                                  (pinned ? ", `[sources]` pinned" : "") *
+                                  " |")
+                          continue
+                      end
+                      bound = get(COMPAT, name, nothing)
+                      if bound === nothing
+                          summary("| $(kind) | `$(name)` | " *
+                                  "OK — registered, no compat |")
+                          continue
+                      end
+                      spec = _semver_spec(String(bound))
+                      if any(v -> v in spec, versions)
+                          summary("| $(kind) | `$(name)` | " *
+                                  "OK — compat `$(bound)` satisfied |")
+                      elseif kind == "weakdep"
+                          push!(warnings,
+                              "no registered version of $(name) (weakdep) " *
+                              "satisfies compat `$(bound)` (registered: " *
+                              join(string.(sort(versions)), ", ") *
+                              "); not a registration blocker since " *
+                              "AutoMerge does not check weakdep compat " *
+                              "bounds")
+                          summary("| $(kind) | `$(name)` | " *
+                                  "WARN — compat `$(bound)` unsatisfiable " *
+                                  "(not enforced for weakdeps) |")
+                      else
+                          push!(errors,
+                              "no registered version of $(name) satisfies " *
+                              "compat `$(bound)` (registered: " *
+                              join(string.(sort(versions)), ", ") * ")")
+                          summary("| $(kind) | `$(name)` | " *
+                                  "FAIL — compat `$(bound)` unsatisfiable |")
+                      end
                   end
               end
               summary("")
-              return errors
+              return errors, warnings
           end
 
           # Root Project.toml of `owner/repo` on its default branch, or
@@ -273,7 +293,7 @@ jobs:
           end
 
           function main()
-              reg_errors = check_registrability()
+              reg_errors, reg_warnings = check_registrability()
               revdep_breaks = check_reverse_deps()
               flush_summary()
               println(join(SUMMARY, "\n"))
@@ -288,6 +308,12 @@ jobs:
                   printstyled(
                       "\nRegistrability: all dependencies registrable.\n";
                       color = :green)
+              end
+
+              if !isempty(reg_warnings)
+                  printstyled("\nRegistrability warnings:\n";
+                      color = :yellow, bold = true)
+                  foreach(w -> println("  - ", w), reg_warnings)
               end
 
               if !isempty(revdep_breaks)
