@@ -75,6 +75,9 @@ on:
         required: false
         type: number
         default: 14
+    secrets:
+      DOCUMENTER_KEY:
+        required: false
 
 jobs:
   release-nudge:
@@ -106,6 +109,8 @@ jobs:
           RN_BRANCH: ${{ inputs.branch }}
           RN_LABEL: ${{ inputs.label }}
           RN_STALE_DAYS: ${{ inputs.stale_days }}
+          # Presence only, never the key itself.
+          RN_HAS_DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY != '' && 'true' || 'false' }}
         run: |
           using Pkg
           using TOML
@@ -117,6 +122,8 @@ jobs:
           const LABEL = get(ENV, "RN_LABEL", "release-nudge")
           const REGISTRY = get(ENV, "RN_REGISTRY", "General")
           const STALE_DAYS = parse(Int, get(ENV, "RN_STALE_DAYS", "14"))
+          const HAS_DOCUMENTER_KEY =
+              get(ENV, "RN_HAS_DOCUMENTER_KEY", "true") == "true"
 
           # Never let a literal '@' reach the issue body: a contributor's
           # handle sitting in a commit subject (or, worse, a bot handle)
@@ -428,6 +435,15 @@ jobs:
               push!(sections,
                   "### Does the version need bumping?\n\n$(bump_line)")
               push!(sections, "### What to do\n\n" * steps_text)
+              HAS_DOCUMENTER_KEY || push!(sections,
+                  "### No `DOCUMENTER_KEY`\n\n" *
+                  "This repository has no `DOCUMENTER_KEY` secret, so TagBot " *
+                  "will tag with the Actions app token. GitHub raises no push " *
+                  "event for such a tag, so the release will publish no " *
+                  "versioned docs, and a tagged commit that touches a workflow " *
+                  "file is refused outright. Add the deploy key before " *
+                  "releasing: https://epiawarepackagetools.epiaware.org/dev/" *
+                  "getting-started/infrastructure#documenter-key")
               isempty(docs_line) || push!(sections, docs_line)
               push!(sections, "<!-- release-nudge-state: $(state) -->")
 
