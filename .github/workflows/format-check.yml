@@ -1,10 +1,29 @@
+# Runs the repo's pre-commit hooks. Julia formatting is one of them, via
+# fredrikekre/runic-pre-commit, which installs Runic itself through
+# pre-commit's Julia language support, so nothing is pre-installed for it
+# here, once a repo has moved. Julia must still be on the runner for the hook
+# to use, and pre-commit must be 4.1.0 or later for Julia language hooks to
+# exist at all. A repo still on the old JuliaFormatter hook gets that
+# installed instead, detected from its own config.
+#
+# The Runic version is pinned in each repo's `.pre-commit-config.yaml`
+# (`additional_dependencies: ['Runic@x.y.z']`), not here: it belongs with the
+# hook that consumes it. Pinning a formatter in two places is how the old
+# JuliaFormatter setup could reformat in CI what the local hook left alone.
+
 name: pre-commit
 
 on:
   workflow_call:
     inputs:
       juliaformatter_version:
-        description: 'JuliaFormatter version to pin for the formatter hook'
+        description: >-
+          Version installed when the caller is still on the JuliaFormatter
+          pre-commit hook. Ignored once a repo moves to Runic, which installs
+          itself. Whether to install at all is decided by reading the caller's
+          `.pre-commit-config.yaml`, not by this input, so a repo migrates by
+          editing that file alone and callers that never set this keep working
+          on the old default.
         required: false
         type: string
         default: '2.5.5'
@@ -24,17 +43,48 @@ jobs:
       - uses: actions/setup-python@v7
       - uses: julia-actions/setup-julia@v3
       - uses: julia-actions/cache@v3
-      - run: >-
-          julia -e 'using Pkg; Pkg.add(name="JuliaFormatter",
-          version="${{ inputs.juliaformatter_version }}")'
-      - run: python -m pip install pre-commit
+      # The JuliaFormatter hook cannot install its own formatter, so one has
+      # to be put on the runner; the Runic hook provisions itself and needs
+      # nothing. Which applies is read from the caller's config rather than
+      # taken from an input: Dependabot bumps this workflow's pin on its own
+      # schedule, so a repo reaches a new version whenever Dependabot says,
+      # not when its config moved. Keying off the config means the two can
+      # never disagree, and a repo migrates by editing that file alone.
+      - name: Install JuliaFormatter when the caller still uses that hook
+        env:
+          VERSION: ${{ inputs.juliaformatter_version }}
+        run: |
+          set -euo pipefail
+          # Match the hook id, not the string: every scaffolded config names
+          # JuliaFormatter in a comment above the hook, so an unanchored grep
+          # keeps firing for a repo that has already moved to Runic. The id
+          # may be quoted (pre-commit reads all three forms the same), and the
+          # line is anchored at both ends so `julia-formatter-check` and
+          # friends do not match.
+          id_re="^[[:space:]]*-[[:space:]]*id:[[:space:]]*"
+          id_re="${id_re}['\"]?julia-formatter['\"]?[[:space:]]*$"
+          if ! grep -qE "$id_re" .pre-commit-config.yaml 2>/dev/null; then
+            echo "No JuliaFormatter hook; nothing to pre-install."
+            exit 0
+          fi
+          echo "::warning::This repo still formats with JuliaFormatter."
+          echo "::warning::Move .pre-commit-config.yaml to the Runic hook."
+          # ENV lookup, not string interpolation: splicing the value into a
+          # Julia string literal breaks on a `"` in the version.
+          julia -e 'using Pkg
+            Pkg.add(name="JuliaFormatter", version=ENV["VERSION"])'
+      # 4.1.0 is the floor for Julia language hooks, which runic-pre-commit
+      # v2 relies on to install Runic.
+      - run: python -m pip install 'pre-commit>=4.1.0'
       - run: python -m pip freeze --local
       - uses: actions/cache@v6
         with:
           path: |
             ~/.cache/pre-commit
             ~/.cache/R/renv
-          key: pre-commit-3|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml') }}
+          # Bumped to 4 with the move to Runic: the hook environments changed
+          # shape, so a cache from the JuliaFormatter era is dead weight.
+          key: pre-commit-4|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml') }}
       - run: >-
           pre-commit run --show-diff-on-failure --color=always
           ${{ inputs.extra_args }}
