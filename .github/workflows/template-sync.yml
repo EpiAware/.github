@@ -18,6 +18,15 @@ name: Template sync
 on:
   workflow_call:
     inputs:
+      sync_install:
+        description: >-
+          Julia that loads the kit before scaffold_update is called. The kit
+          dogfoods itself and syncs from its own checked-out project; every
+          other package pulls the kit's newest main into a throwaway env.
+          Which of the two applies is scaffold's decision, so the caller
+          supplies the line rather than this workflow guessing.
+        required: true
+        type: string
       ad:
         description: 'Pass ad = true to scaffold_update'
         required: false
@@ -78,7 +87,7 @@ jobs:
         run: |
           julia --color=yes -e '
               using Pkg
-              Pkg.activate("."); Pkg.instantiate()
+              ${{ inputs.sync_install }}
               using EpiAwarePackageTools
               res = scaffold_update(".";
                   ad = ${{ inputs.ad }},
