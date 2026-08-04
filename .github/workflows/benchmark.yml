@@ -1,0 +1,163 @@
+# Benchmarks the evaluation and AD gradient suites against the PR base and
+# posts a single comparison comment.
+#
+# Each revision is benchmarked in its own job, checked out at that revision,
+# so base runs base's sources and fixtures while head runs its own. That is
+# what lets AD gradient benchmarks be compared across an API change, and it
+# keeps one runner from loading two heavy AD stacks at once.
+#
+# The caller must use `pull_request`, not `pull_request_target`: the
+# comparison runs the PR's own code.
+
+name: Benchmark
+
+on:
+  workflow_call:
+    inputs:
+      org:
+        description: 'Org hosting EpiAwarePackageTools.jl'
+        required: false
+        type: string
+        default: EpiAware
+      julia_version:
+        description: 'Julia version to benchmark on'
+        required: false
+        type: string
+        default: '1'
+      timeout_minutes:
+        description: 'Timeout for each per-revision benchmark job'
+        required: false
+        type: number
+        default: 90
+
+jobs:
+  benchmark:
+    name: Benchmark (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: pr
+            ref: ${{ github.event.pull_request.head.sha }}
+          - name: main
+            ref: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.ref }}
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ inputs.julia_version }}
+      - uses: julia-actions/cache@v3
+
+      # Pkg honours `[sources]` only in the *active* project, so a dependency
+      # pinned there because it is not yet registered cannot resolve in the
+      # benchmark environment and fails with "has no known versions!" (#216).
+      # Register each such pin into a throwaway registry in this runner's
+      # depot: registries are depot-level, so the name then resolves
+      # everywhere. A package with no unregistered pins is a no-op.
+      #
+      # The scratch registry comes back with the cached depot and is stale by
+      # construction, so drop it before the guard — a package that has since
+      # dropped its pin must not keep a registry still carrying the name,
+      # which fails the depot with a hash mismatch.
+      - name: Bootstrap registry for unregistered [sources] deps
+        run: |
+          rm -rf "${JULIA_DEPOT_PATH:-$HOME/.julia}/registries/EpiAwareScratch"
+          if ! grep -qE '^\[sources(\.|\])' Project.toml; then
+            echo "no [sources] section: nothing to register"
+            exit 0
+          fi
+          julia -e '
+            using Pkg
+            Pkg.activate(; temp = true)
+            Pkg.add([
+                Pkg.PackageSpec(name = "LocalRegistry"),
+                Pkg.PackageSpec(
+                    url = "https://github.com/${{ inputs.org }}" *
+                          "/EpiAwarePackageTools.jl",
+                    rev = "main")])
+            using EpiAwarePackageTools.Benchmarks: bootstrap_sources_registry
+            done = bootstrap_sources_registry(pwd())
+            println(isempty(done) ? "no unregistered [sources] deps" :
+                    "registered: " * join(done, ", "))'
+
+      # Inlines a bare BenchmarkTools call rather than calling the scaffolded
+      # benchmark/run.jl, so this still works when checking out a revision
+      # that predates that script.
+      - name: Run benchmark suite
+        run: |
+          julia --project=benchmark -e '
+            using Pkg
+            Pkg.develop(path = pwd())
+            Pkg.instantiate()
+            using BenchmarkTools
+            include("benchmark/benchmarks.jl")
+            results = run(SUITE; verbose = true, seconds = 1)
+            BenchmarkTools.save("results-${{ matrix.name }}.json", results)'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bench-${{ matrix.name }}
+          path: results-${{ matrix.name }}.json
+
+  compare:
+    needs: benchmark
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      # No ref override: the comparison always runs the PR's own commit, so
+      # unlike the benchmark job it can depend on the kit-shipped script.
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ inputs.julia_version }}
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      # compare.jl needs only the kit and BenchmarkTools, not the package's
+      # benchmark deps, so it runs in a scratch env that installs both rather
+      # than trusting benchmark/Project.toml — that file is package-owned and
+      # is never overwritten for an adopter that already had one (#821).
+      - name: Build comparison comment
+        run: |
+          julia -e '
+            using Pkg
+            Pkg.activate(; temp = true)
+            Pkg.add([
+                Pkg.PackageSpec(
+                    url = "https://github.com/${{ inputs.org }}" *
+                          "/EpiAwarePackageTools.jl",
+                    rev = "main"),
+                Pkg.PackageSpec(name = "BenchmarkTools")])
+            include("benchmark/compare.jl")' \
+            artifacts/bench-pr/results-pr.json \
+            artifacts/bench-main/results-main.json comment.md
+
+      - name: Post comparison comment
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('comment.md', 'utf8');
+            const marker = '<!-- benchmark-comparison -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number });
+            const existing = comments.find(
+              (c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment(
+                { owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment(
+                { owner, repo, issue_number, body });
+            }

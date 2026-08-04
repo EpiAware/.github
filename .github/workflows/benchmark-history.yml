@@ -1,0 +1,167 @@
+# Persistent benchmark timeline. Benchmarks the last few tagged releases plus
+# HEAD and deploys plots to a `benchmarks` branch, so a history accumulates.
+#
+# The PR-comparison workflow (benchmark.yml) only posts a base-vs-head comment
+# and records nothing. Callers must keep the triggers disjoint — push and tags
+# here, pull_request there — so the two never run on the same event.
+
+name: Benchmark history
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: 'Package name, as benchpkg expects it'
+        required: true
+        type: string
+      org:
+        description: 'Org hosting EpiAwarePackageTools.jl'
+        required: false
+        type: string
+        default: EpiAware
+      julia_version:
+        description: 'Julia version to benchmark on'
+        required: false
+        type: string
+        default: '1'
+      tag_count:
+        description: 'How many recent tags to include in the timeline'
+        required: false
+        type: number
+        default: 5
+
+jobs:
+  history:
+    runs-on: ubuntu-latest
+    # contents: write lets the deploy action push to the benchmarks branch.
+    permissions:
+      contents: write
+    # Serialise deploys so concurrent pushes and tags do not race on the
+    # branch. Not keyed on ref, so a tag push and a main push queue rather
+    # than clobber; cancel-in-progress: false keeps every recorded point.
+    concurrency:
+      group: benchmark-history-deploy
+      cancel-in-progress: false
+    steps:
+      # fetch-depth: 0 so all tags resolve; benchpkg checks out each
+      # historical rev from this working tree.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ inputs.julia_version }}
+
+      - uses: julia-actions/cache@v3
+
+      # benchmark/Project.toml declares ADFixtures as a path source at
+      # ../test/ADFixtures. benchpkg copies that file into a tempdir under
+      # /tmp/ and Pkg resolves the relative source to /tmp/test/ADFixtures, so
+      # stage it there. A non-AD package has nothing to stage.
+      - name: Stage ADFixtures for AirspeedVelocity
+        run: |
+          if [ -d test/ADFixtures ]; then
+            mkdir -p /tmp/test
+            cp -r test/ADFixtures /tmp/test/ADFixtures
+          fi
+
+      - name: Install AirspeedVelocity
+        run: |
+          julia -e 'ENV["JULIA_PKG_PRECOMPILE_AUTO"]=0;
+                    import Pkg; Pkg.add("AirspeedVelocity");
+                    Pkg.build("AirspeedVelocity")'
+          echo "$HOME/.julia/bin" >> "$GITHUB_PATH"
+
+      # benchpkg installs the package into its own temp project, where Pkg
+      # honours only that project's `[sources]`, so an unregistered pin cannot
+      # resolve and the run fails with "has no known versions!" (#216).
+      # Register each pin into a throwaway depot-level registry so the name
+      # resolves in benchpkg's temp projects too. Dropped first because the
+      # cached depot brings back a stale copy, and a package that has since
+      # dropped its pin must not keep a registry still carrying the name.
+      - name: Bootstrap registry for unregistered [sources] deps
+        run: |
+          rm -rf "${JULIA_DEPOT_PATH:-$HOME/.julia}/registries/EpiAwareScratch"
+          if ! grep -qE '^\[sources(\.|\])' Project.toml; then
+            echo "no [sources] section: nothing to register"
+            exit 0
+          fi
+          julia -e '
+            using Pkg
+            Pkg.activate(; temp = true)
+            Pkg.add([
+                Pkg.PackageSpec(name = "LocalRegistry"),
+                Pkg.PackageSpec(
+                    url = "https://github.com/${{ inputs.org }}" *
+                          "/EpiAwarePackageTools.jl",
+                    rev = "main")])
+            using EpiAwarePackageTools.Benchmarks: bootstrap_sources_registry
+            done = bootstrap_sources_registry(pwd())
+            println(isempty(done) ? "no unregistered [sources] deps" :
+                    "registered: " * join(done, ", "))'
+
+      # On a tag push GITHUB_SHA already points at the tagged commit, so HEAD
+      # is the newest point on the timeline either way.
+      - name: Collect revs
+        id: revs
+        run: |
+          TAGS=$(git tag --sort=-v:refname |
+                 head -${{ inputs.tag_count }} | paste -sd, -)
+          if [ -n "$TAGS" ]; then
+            echo "revs=${TAGS},${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          else
+            # Pre-first-tag bootstrap: emit the bare SHA, since a leading
+            # comma in the revs list is rejected by benchpkg (#125).
+            echo "revs=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # --bench-on pins the benchmark script to HEAD so older revs are
+      # measured with the current suite. --tune re-tunes per run to quieten
+      # shared-runner noise. --url points benchpkg at the repo directly so an
+      # unregistered package resolves instead of erroring against General
+      # (#125).
+      - name: Run benchmarks
+        run: |
+          mkdir -p results
+          benchpkg ${{ inputs.package }} \
+            --url="https://github.com/${{ github.repository }}" \
+            --rev="${{ steps.revs.outputs.revs }}" \
+            --bench-on="${{ github.sha }}" \
+            --output-dir=results \
+            --tune
+
+      # benchpkgplot flattens the BenchmarkGroup into one PNG per leaf
+      # benchmark (SVG is unsupported); benchpkgtable emits a ratio summary.
+      - name: Plot timeline and table
+        run: |
+          mkdir -p public
+          benchpkgplot ${{ inputs.package }} \
+            --rev="${{ steps.revs.outputs.revs }}" \
+            --npart=20 --format=png \
+            --input-dir=results --output-dir=public
+          benchpkgtable ${{ inputs.package }} \
+            --rev="${{ steps.revs.outputs.revs }}" \
+            --input-dir=results --ratio --mode time,memory \
+            > public/table.md
+
+      - name: Write index page
+        run: |
+          {
+            echo "# ${{ inputs.package }}.jl benchmark history"
+            echo
+            echo "Revisions: ${{ steps.revs.outputs.revs }}"
+            echo
+            echo "See \`table.md\` for the ratio summary and the PNG"
+            echo "files in this folder for per-benchmark timelines."
+          } > public/README.md
+
+      # Deliberately not gh-pages: Documenter force-pushes that branch on
+      # every docs build and would clobber anything written here.
+      - name: Deploy to benchmarks branch
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          branch: benchmarks
+          folder: public
+          target-folder: history
+          clean: true
