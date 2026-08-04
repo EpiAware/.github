@@ -55,7 +55,11 @@ jobs:
           VERSION: ${{ inputs.juliaformatter_version }}
         run: |
           set -euo pipefail
-          if ! grep -q 'JuliaFormatter' .pre-commit-config.yaml; then
+          # Match the hook id, not the string: every scaffolded config names
+          # JuliaFormatter in a comment above the hook, so an unanchored grep
+          # keeps firing for a repo that has already moved to Runic.
+          if ! grep -qE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*julia-formatter' \
+              .pre-commit-config.yaml 2>/dev/null; then
             echo "No JuliaFormatter hook; nothing to pre-install."
             exit 0
           fi
