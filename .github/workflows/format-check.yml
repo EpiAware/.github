@@ -2,10 +2,9 @@
 # fredrikekre/runic-pre-commit, which installs Runic itself through
 # pre-commit's Julia language support, so nothing is pre-installed for it
 # here, once a repo has moved. Julia must still be on the runner for the hook
-# to use, and pre-commit
-# must be 4.1.0 or later for Julia language hooks to exist at all. A caller
-# still on the old JuliaFormatter hook gets that installed instead, via the
-# deprecated input below.
+# to use, and pre-commit must be 4.1.0 or later for Julia language hooks to
+# exist at all. A repo still on the old JuliaFormatter hook gets that
+# installed instead, detected from its own config.
 #
 # The Runic version is pinned in each repo's `.pre-commit-config.yaml`
 # (`additional_dependencies: ['Runic@x.y.z']`), not here: it belongs with the
