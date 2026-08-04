@@ -1,13 +1,34 @@
+# Runs the repo's pre-commit hooks. Julia formatting is one of them, via
+# fredrikekre/runic-pre-commit, which installs Runic itself through
+# pre-commit's Julia language support, so nothing is pre-installed for it
+# here. Julia must still be on the runner for the hook to use, and pre-commit
+# must be 4.1.0 or later for Julia language hooks to exist at all. A caller
+# still on the old JuliaFormatter hook gets that installed instead, via the
+# deprecated input below.
+#
+# The Runic version is pinned in each repo's `.pre-commit-config.yaml`
+# (`additional_dependencies: ['Runic@x.y.z']`), not here: it belongs with the
+# hook that consumes it. Pinning a formatter in two places is how the old
+# JuliaFormatter setup could reformat in CI what the local hook left alone.
+
 name: pre-commit
 
 on:
   workflow_call:
     inputs:
       juliaformatter_version:
-        description: 'JuliaFormatter version to pin for the formatter hook'
+        description: >-
+          Deprecated. Set only by a caller still on the JuliaFormatter
+          pre-commit hook, which cannot install its own formatter and so needs
+          one put on the runner. Left empty (the default) nothing is
+          pre-installed and the Runic hook provisions itself. Kept until every
+          adopter has re-scaffolded, because Dependabot bumps this workflow's
+          pin on its own schedule: a repo can reach this version before its
+          `.pre-commit-config.yaml` has moved, and dropping the install would
+          fail its formatting job with no action on its part.
         required: false
         type: string
-        default: '2.5.5'
+        default: ''
       extra_args:
         description: 'Extra args passed to pre-commit run'
         required: false
@@ -24,17 +45,28 @@ jobs:
       - uses: actions/setup-python@v7
       - uses: julia-actions/setup-julia@v3
       - uses: julia-actions/cache@v3
-      - run: >-
+      # Only for a caller still on the JuliaFormatter hook. The Runic hook
+      # needs nothing here.
+      - name: Install JuliaFormatter for a pre-Runic caller
+        if: inputs.juliaformatter_version != ''
+        run: |
+          echo "::warning::juliaformatter_version is deprecated. Move this"
+          echo "::warning::repo's .pre-commit-config.yaml to the Runic hook"
+          echo "::warning::and drop the input."
           julia -e 'using Pkg; Pkg.add(name="JuliaFormatter",
-          version="${{ inputs.juliaformatter_version }}")'
-      - run: python -m pip install pre-commit
+            version="${{ inputs.juliaformatter_version }}")'
+      # 4.1.0 is the floor for Julia language hooks, which runic-pre-commit
+      # v2 relies on to install Runic.
+      - run: python -m pip install 'pre-commit>=4.1.0'
       - run: python -m pip freeze --local
       - uses: actions/cache@v6
         with:
           path: |
             ~/.cache/pre-commit
             ~/.cache/R/renv
-          key: pre-commit-3|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml') }}
+          # Bumped to 4 with the move to Runic: the hook environments changed
+          # shape, so a cache from the JuliaFormatter era is dead weight.
+          key: pre-commit-4|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml') }}
       - run: >-
           pre-commit run --show-diff-on-failure --color=always
           ${{ inputs.extra_args }}
