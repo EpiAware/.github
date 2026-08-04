@@ -1,0 +1,249 @@
+# Re-applies the managed EpiAware standard and routes whatever drifted to
+# whoever can actually fix it:
+#
+#   managed files outside .github/  -> a PR, which GITHUB_TOKEN can push
+#   workflows and composite actions -> an issue, which it cannot
+#   reusable SHAs and action pins   -> nothing; those belong to Dependabot
+#
+# The third case never reaches here: scaffold_update's _preserve_reusable_refs
+# and _preserve_action_pins re-emit the destination's existing pins, so a
+# Dependabot bump is not drift. Any remaining diff under .github/workflows is
+# therefore a real change — a new file, a changed trigger, a new input — and
+# GITHUB_TOKEN is refused those paths without the `workflows` permission. So
+# the sync reports them instead of failing, and a maintainer runs
+# scaffold_update locally and pushes with credentials that carry that scope.
+
+name: Template sync
+
+on:
+  workflow_call:
+    inputs:
+      ad:
+        description: 'Pass ad = true to scaffold_update'
+        required: false
+        type: boolean
+        default: false
+      benchmarks:
+        description: 'Pass benchmarks = true to scaffold_update'
+        required: false
+        type: boolean
+        default: false
+      downgrade_compat:
+        description: 'Pass downgrade_compat = true to scaffold_update'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      # On a Dependabot PR this runs under a read-only token with no access to
+      # Actions secrets, and the sync could never fix anything from a PR
+      # anyway: it only pushes to a branch it opened itself (#215). So a PR is
+      # a clean no-op that reports green. Kept as a running job rather than an
+      # if-skipped one so a required-check gate on `sync` stays satisfied
+      # (#256). The scheduled run is what detects drift.
+      - name: Skip on a pull request
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "template-sync does not run on a pull request; the scheduled"
+          echo "run detects drift and opens a PR or an issue."
+
+      - uses: actions/checkout@v7
+        if: github.event_name != 'pull_request'
+        with:
+          fetch-depth: 0
+      - uses: julia-actions/setup-julia@v3
+        if: github.event_name != 'pull_request'
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v3
+        if: github.event_name != 'pull_request'
+
+      # scaffold_update reconciles docs/make.jl's deploy_url against the
+      # gh-pages CNAME (a Pages custom domain set out of band); a mismatch
+      # ships a CSS-less site CI cannot otherwise see. The default checkout
+      # does not fetch gh-pages. `|| true` for a repo that never deployed.
+      - name: Fetch gh-pages so the docs custom domain can be reconciled
+        if: github.event_name != 'pull_request'
+        run: git fetch --depth=1 origin gh-pages || true
+
+      - name: Re-apply the managed EpiAware standard
+        if: github.event_name != 'pull_request'
+        run: |
+          julia --color=yes -e '
+              using Pkg
+              Pkg.activate("."); Pkg.instantiate()
+              using EpiAwarePackageTools
+              res = scaffold_update(".";
+                  ad = ${{ inputs.ad }},
+                  benchmarks = ${{ inputs.benchmarks }},
+                  downgrade_compat = ${{ inputs.downgrade_compat }})
+              println("re-applied ", length(res.updated), " managed files")'
+
+      - name: Classify the drift
+        if: github.event_name != 'pull_request'
+        id: drift
+        run: |
+          set -euo pipefail
+          # Intent-to-add so new files appear in `git diff` below.
+          git add -A -N
+
+          mapfile -t CHANGED < <(git status --porcelain | sed 's/^...//')
+          BLOCKED=()
+          PUSHABLE=()
+          for path in "${CHANGED[@]}"; do
+            case "$path" in
+              .github/workflows/*|.github/actions/*) BLOCKED+=("$path") ;;
+              *) PUSHABLE+=("$path") ;;
+            esac
+          done
+
+          {
+            echo "blocked_count=${#BLOCKED[@]}"
+            echo "pushable_count=${#PUSHABLE[@]}"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo 'pushable<<PATHS_EOF'
+            if [ ${#PUSHABLE[@]} -gt 0 ]; then
+              printf '%s\n' "${PUSHABLE[@]}"
+            fi
+            echo 'PATHS_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+          if [ ${#BLOCKED[@]} -gt 0 ]; then
+            printf '%s\n' "${BLOCKED[@]}" > /tmp/blocked-paths.txt
+            # Cap the diff so a large drift still yields a readable issue; the
+            # full change is always reproducible with scaffold_update. Written
+            # via a file rather than a pipe: `head` closing the pipe early
+            # would fail `git diff` under pipefail.
+            git diff -- "${BLOCKED[@]}" > /tmp/blocked-full.diff
+            head -c 40000 /tmp/blocked-full.diff > /tmp/blocked-diff.txt
+          fi
+
+          echo "blocked: ${#BLOCKED[@]}, pushable: ${#PUSHABLE[@]}"
+
+      # One report per repo, found by a marker in the body rather than by
+      # title, so a retitled issue is still recognised and refreshed.
+      - name: Find the open drift report
+        if: github.event_name != 'pull_request'
+        id: report
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MARKER: <!-- template-sync-blocked -->
+        run: |
+          set -euo pipefail
+          ISSUE=$(gh issue list --state open --label ci --limit 100 \
+            --json number,body |
+            jq -r --arg m "$MARKER" \
+              'map(select(.body | contains($m)))[0].number // empty')
+          echo "issue=$ISSUE" >> "$GITHUB_OUTPUT"
+          echo "open drift report: ${ISSUE:-none}"
+
+      # Workflow drift: report it. Refreshes the open issue rather than
+      # opening a fresh one every week.
+      - name: Open or refresh the workflow-drift issue
+        if: >-
+          github.event_name != 'pull_request' &&
+          steps.drift.outputs.blocked_count != '0'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXISTING: ${{ steps.report.outputs.issue }}
+        run: |
+          set -euo pipefail
+          MARKER='<!-- template-sync-blocked -->'
+          TITLE='ci: managed workflows have drifted from the EpiAware standard'
+
+          {
+            echo "$MARKER"
+            echo
+            echo "The scheduled template sync found drift in files it cannot"
+            echo "push. \`GITHUB_TOKEN\` is refused writes under"
+            echo "\`.github/workflows\` without the \`workflows\` permission,"
+            echo "so this needs a maintainer."
+            echo
+            echo "### Fix"
+            echo
+            echo '```bash'
+            echo "julia --project=. -e 'using EpiAwarePackageTools;"
+            echo "    scaffold_update(\".\")'"
+            echo '```'
+            echo
+            echo "Then commit and push on a branch. Reusable-workflow SHAs and"
+            echo "action pins are preserved, so this will not revert a"
+            echo "Dependabot bump."
+            echo
+            echo "### Files"
+            echo
+            echo '```'
+            cat /tmp/blocked-paths.txt
+            echo '```'
+            echo
+            echo "<details><summary>Diff</summary>"
+            echo
+            echo '```diff'
+            cat /tmp/blocked-diff.txt
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+            echo "_Refreshed by the scheduled template sync._"
+          } > /tmp/issue-body.md
+
+          if [ -n "$EXISTING" ]; then
+            gh issue edit "$EXISTING" --body-file /tmp/issue-body.md
+            echo "Refreshed issue #$EXISTING"
+          else
+            gh issue create --title "$TITLE" --label ci \
+              --body-file /tmp/issue-body.md
+          fi
+
+      # Workflows back in line: close the report so a stale issue does not
+      # outlive the drift it described.
+      - name: Close the workflow-drift issue once resolved
+        if: >-
+          github.event_name != 'pull_request' &&
+          steps.drift.outputs.blocked_count == '0'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXISTING: ${{ steps.report.outputs.issue }}
+        run: |
+          set -euo pipefail
+          if [ -n "$EXISTING" ]; then
+            gh issue close "$EXISTING" --comment \
+              "Managed workflows match the standard again; closed by the
+          scheduled template sync."
+          fi
+
+      # Everything else: the PR path, unchanged. add-paths keeps the blocked
+      # files out of the commit, so the push succeeds even when both kinds of
+      # drift are present.
+      - name: Open a PR for the drift CI can push
+        if: >-
+          github.event_name != 'pull_request' &&
+          steps.drift.outputs.pushable_count != '0'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: chore/template-sync
+          delete-branch: true
+          add-paths: ${{ steps.drift.outputs.pushable }}
+          commit-message: "ci: sync managed infra to the EpiAware standard"
+          title: "ci: sync managed infra to the EpiAware standard"
+          labels: |
+            ci
+          body: |
+            Automated re-apply of the managed EpiAwarePackageTools standard.
+
+            Merge to bring this repo's managed infra back in line with the
+            kit. Package-owned files (unit tests, `qa_config.jl`, AD
+            scenarios, `LICENSE`) are never touched.
+
+            Managed workflows are not in this PR: CI cannot push them. If any
+            drifted, the sync has opened a separate issue.

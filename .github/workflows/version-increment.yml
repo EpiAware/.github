@@ -1,0 +1,285 @@
+# Version bumps for Project.toml, in two modes.
+#
+#   auto      — on a push to main, increment when the pushed commit did not
+#               already change the version. Opens a PR.
+#   on-demand — act on a `/version major|minor|patch` comment from someone
+#               with write access. Commits straight to the PR branch.
+#
+# Both modes share the increment and so live here together; the caller picks
+# a mode and supplies the trigger.
+
+name: Version Increment
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: '`auto` or `on-demand` (see header)'
+        required: true
+        type: string
+      auto_increment_type:
+        description: 'Increment applied in auto mode'
+        required: false
+        type: string
+        default: patch
+      assignee:
+        description: >-
+          Handle to assign the opened PR to, or empty for none. Must not be a
+          bare org: GitHub rejects assigning an org and the update path fails
+          with replaceActorsForAssignable.
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  # Decides whether to act, what increment to apply, and what to check out.
+  # Split from the increment so the on-demand permission check can report a
+  # denial without the increment job existing at all.
+  resolve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      proceed: ${{ steps.decide.outputs.proceed }}
+      denied: ${{ steps.decide.outputs.denied }}
+      increment_type: ${{ steps.decide.outputs.increment_type }}
+      ref: ${{ steps.decide.outputs.ref }}
+      repository: ${{ steps.decide.outputs.repository }}
+    steps:
+      - name: Checkout for the auto-mode version comparison
+        if: inputs.mode == 'auto'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Decide
+        id: decide
+        # The comment body is untrusted and reaches the shell only through an
+        # env var: interpolating it via ${{ }} is a script-injection vector,
+        # and any shell-special character (a codecov comment such as
+        # `91% <100%> (+0.01%)`) breaks the run outright.
+        env:
+          COMMENT: ${{ github.event.comment.body }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.event.comment.user.login }}
+        run: |
+          set -euo pipefail
+          echo "proceed=false" >> "$GITHUB_OUTPUT"
+          echo "denied=false" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ inputs.mode }}" = "auto" ]; then
+            CURRENT=$(grep '^version = ' Project.toml |
+                      sed 's/version = "\(.*\)"/\1/')
+            git show HEAD~1:Project.toml > /tmp/Project.prev
+            PREV=$(grep '^version = ' /tmp/Project.prev |
+                   sed 's/version = "\(.*\)"/\1/')
+            echo "current=$CURRENT previous=$PREV"
+            if [ "$CURRENT" = "$PREV" ]; then
+              echo "Version unchanged; incrementing."
+              {
+                echo "proceed=true"
+                echo "increment_type=${{ inputs.auto_increment_type }}"
+              } >> "$GITHUB_OUTPUT"
+            else
+              echo "Version already changed; nothing to do."
+            fi
+            exit 0
+          fi
+
+          # on-demand
+          if ! echo "$COMMENT" | grep -qE '^/version\s+(major|minor|patch)\s*$'
+          then
+            echo "No /version command in this comment."
+            exit 0
+          fi
+          TYPE=$(echo "$COMMENT" |
+                 sed -E 's#^/version\s+(major|minor|patch)\s*$#\1#')
+          PERMISSION=$(gh api \
+            "repos/$REPO/collaborators/$ACTOR/permission" \
+            --jq '.permission')
+          echo "$ACTOR has permission: $PERMISSION"
+          if [[ "$PERMISSION" != "admin" && "$PERMISSION" != "write" && \
+                "$PERMISSION" != "maintain" ]]; then
+            echo "denied=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          gh api "repos/$REPO/issues/comments/$COMMENT_ID/reactions" \
+            --method POST --field content='rocket'
+
+          PR=$(gh api "repos/$REPO/pulls/$ISSUE_NUMBER")
+          {
+            echo "proceed=true"
+            echo "increment_type=$TYPE"
+            echo "ref=$(echo "$PR" | jq -r '.head.ref')"
+            echo "repository=$(echo "$PR" | jq -r '.head.repo.full_name')"
+          } >> "$GITHUB_OUTPUT"
+
+  increment:
+    needs: resolve
+    if: needs.resolve.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      old_version: ${{ steps.bump.outputs.old_version }}
+      new_version: ${{ steps.bump.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Empty in auto mode, where the default checkout is correct.
+          ref: ${{ needs.resolve.outputs.ref }}
+          repository: ${{ needs.resolve.outputs.repository ||
+                          github.repository }}
+
+      - name: Bump the version in Project.toml
+        id: bump
+        env:
+          INCREMENT_TYPE: ${{ needs.resolve.outputs.increment_type }}
+        run: |
+          set -euo pipefail
+          CURRENT=$(grep '^version = ' Project.toml |
+                    sed 's/version = "\(.*\)"/\1/')
+
+          # Strip any pre-release/build suffix before parsing. Everything the
+          # kit scaffolds starts life as e.g. "0.1.0-DEV" and has never been
+          # published, so the correct transition is to release the number the
+          # file already carries, not to increment past it. Without this,
+          # IFS='.' leaves PATCH as "0-DEV", $((PATCH + 1)) coerces it to 1,
+          # and the maiden version silently skips 0.1.0 (#255).
+          BASE="${CURRENT%%[-+]*}"
+
+          if [ "$BASE" != "$CURRENT" ]; then
+            NEW="$BASE"
+            echo "Pre-release '$CURRENT': releasing $NEW, no increment."
+          else
+            IFS='.' read -ra PARTS <<< "$BASE"
+            MAJOR=${PARTS[0]}; MINOR=${PARTS[1]}; PATCH=${PARTS[2]}
+            case "$INCREMENT_TYPE" in
+              major) NEW="$((MAJOR + 1)).0.0" ;;
+              minor) NEW="${MAJOR}.$((MINOR + 1)).0" ;;
+              patch) NEW="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+              *)
+                echo "Invalid increment type '$INCREMENT_TYPE'." >&2
+                exit 1
+                ;;
+            esac
+          fi
+
+          echo "New version: $NEW"
+          sed -i "s/version = \"$CURRENT\"/version = \"$NEW\"/" Project.toml
+          {
+            echo "old_version=$CURRENT"
+            echo "new_version=$NEW"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Configure git
+        run: |
+          git config --local user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+
+      # on-demand: the maintainer asked for this bump on an open PR, so commit
+      # straight to its branch rather than opening a second PR.
+      - name: Commit to the PR branch
+        if: inputs.mode == 'on-demand'
+        env:
+          NEW: ${{ steps.bump.outputs.new_version }}
+        run: |
+          set -euo pipefail
+          git add Project.toml
+          git commit -m "feat: increment version to $NEW"
+          git pull --rebase && git push
+
+      - name: Open a version PR
+        if: inputs.mode == 'auto'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OLD: ${{ steps.bump.outputs.old_version }}
+          NEW: ${{ steps.bump.outputs.new_version }}
+          INCREMENT_TYPE: ${{ needs.resolve.outputs.increment_type }}
+        run: |
+          set -euo pipefail
+          TITLE="chore: increment version to $NEW"
+          EXISTING=$(gh pr list --state open --search "in:title \"$TITLE\"" \
+            --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "PR #$EXISTING already bumps to $NEW; nothing to do."
+            exit 0
+          fi
+
+          BRANCH="auto/version-increment-${NEW}"
+          git checkout -b "$BRANCH"
+          git add Project.toml
+          git commit -m "$TITLE
+
+          Automatically incremented $INCREMENT_TYPE version.
+
+          Previous version: $OLD
+          New version: $NEW"
+          git push origin "$BRANCH"
+
+          # Assign only when a handle was configured: assigning a bare org
+          # (the fallback when no reviewer is set) errors on the
+          # update-existing-PR path (#122).
+          ASSIGNEE_ARGS=()
+          if [ -n "${{ inputs.assignee }}" ]; then
+            ASSIGNEE_ARGS=(--assignee "${{ inputs.assignee }}")
+          fi
+
+          cat > /tmp/pr-body.md <<EOF
+          Increments the version from \`$OLD\` to \`$NEW\` as a
+          **$INCREMENT_TYPE** release.
+
+          - [ ] Increment type is appropriate ($INCREMENT_TYPE)
+          - [ ] No other changes needed for this release
+
+          _Opened by the Version Increment workflow._
+          EOF
+
+          gh pr create \
+            --title "$TITLE" \
+            --body-file /tmp/pr-body.md \
+            --base main \
+            --head "$BRANCH" \
+            "${ASSIGNEE_ARGS[@]}"
+
+  # Reports back on the comment that asked for the bump. Runs when the
+  # increment succeeded and when permission was refused.
+  notify:
+    needs: [resolve, increment]
+    if: >-
+      always() && inputs.mode == 'on-demand' &&
+      (needs.resolve.outputs.denied == 'true' ||
+       needs.increment.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment on the PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          DENIED: ${{ needs.resolve.outputs.denied }}
+          OLD: ${{ needs.increment.outputs.old_version }}
+          NEW: ${{ needs.increment.outputs.new_version }}
+        run: |
+          set -euo pipefail
+          if [ "$DENIED" = "true" ]; then
+            gh pr comment "$ISSUE_NUMBER" --body \
+              "❌ Sorry @$ACTOR, \`/version\` needs write, maintain, or admin
+          access on this repository."
+            exit 0
+          fi
+          gh pr comment "$ISSUE_NUMBER" --body \
+            "✅ Version incremented from \`$OLD\` to \`$NEW\` and committed to
+          this branch.
+
+          _Triggered by @$ACTOR._"

@@ -1,0 +1,54 @@
+# Posts a "try this PR" comment with copy-paste install instructions when a
+# pull request is opened.
+
+name: Try this PR
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: 'Package name, used in the `using` line of the snippet'
+        required: true
+        type: string
+
+jobs:
+  write-comment:
+    runs-on: ubuntu-latest
+    # Never fail a PR over a comment that could not be posted.
+    continue-on-error: true
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pkg = ${{ toJSON(inputs.package) }};
+            const ref = context.payload.pull_request.head.ref;
+            const { owner, repo } = context.repo;
+            const url = `https://github.com/${owner}/${repo}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `
+              ## Try this Pull Request!
+
+              ### Option 1: Julia Package Manager
+              Open Julia and type:
+              \`\`\`julia
+              import Pkg
+              Pkg.activate(temp=true)
+              Pkg.add(url="${url}", rev="${ref}")
+              using ${pkg}
+              \`\`\`
+
+              ### Option 2: Local Checkout
+              If you have the repo locally:
+              \`\`\`bash
+              git checkout ${ref}
+              julia --project=. -e "using Pkg; Pkg.instantiate()"
+              \`\`\`
+              `
+            })
