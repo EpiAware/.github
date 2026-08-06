@@ -16,8 +16,8 @@ We want to create something equivalent in Julia: a domain-focused ecosystem in t
 
 ## Packages
 
-Package documentation is collected on the [ecosystem site](https://epiaware.org) and its [unified docs browser](https://epiaware.org/docs.html).
-Most packages extend [Distributions.jl](https://github.com/JuliaStats/Distributions.jl) so they share an interface and compose cleanly.
+The ecosystem is a set of [small, composable packages](https://epiaware.org) that combine into infectious disease models: each does one thing and combines with the others, and most extend [Distributions.jl](https://github.com/JuliaStats/Distributions.jl) so they share a common interface and compose cleanly.
+Package documentation is collected on the [ecosystem site](https://epiaware.org), its [unified docs browser](https://epiaware.org/docs.html), and the [packages page](https://epiaware.org/packages/).
 Empty scaffold repositories are listed as *planned* until they have real, documented functionality.
 
 ### Active
@@ -29,7 +29,11 @@ Empty scaffold repositories are listed as *planned* until they have real, docume
 | [ConvolvedDistributions.jl](https://github.com/EpiAware/ConvolvedDistributions.jl) | Distribution convolution and shared numerical quadrature for Distributions.jl |
 | [ModifiedDistributions.jl](https://github.com/EpiAware/ModifiedDistributions.jl) | Wrappers that each change one behaviour of a distribution — rescaling, likelihood weighting, hazards, or transforms |
 | [ReparameterisedDistributions.jl](https://github.com/EpiAware/ReparameterisedDistributions.jl) | Alternative parameterisations for Distributions.jl |
+| [LoweredDistributions.jl](https://github.com/EpiAware/LoweredDistributions.jl) | Lower a distribution, or a whole composed event tree, onto a backend-agnostic dynamical-systems representation (a phase-type chain or a CTMC) |
+| [DistributionsInference.jl](https://github.com/EpiAware/DistributionsInference.jl) | A PPL-neutral fit protocol and log-density engine: any object that names its own parameters becomes fittable, with Turing.jl, Bijectors, and FlexiChains readback as extensions (early development) |
+| [ScoringRules.jl](https://github.com/EpiAware/ScoringRules.jl) | Proper scoring rules for probabilistic forecasts |
 | [ComposableTuringIDModels.jl](https://github.com/EpiAware/ComposableTuringIDModels.jl) | Composable probabilistic infectious disease modelling built on Turing.jl — the ecosystem prototype (early development) |
+| [EpiAwareADTools.jl](https://github.com/EpiAware/EpiAwareADTools.jl) | Automatic differentiation safety machinery for the stack, tested across ForwardDiff, ReverseDiff, Mooncake, and Enzyme |
 | [EpiAwarePackageTools.jl](https://github.com/EpiAware/EpiAwarePackageTools.jl) | Shared CI, documentation, quality, and AD-benchmark tooling for the ecosystem |
 | [EpiAwareR](https://github.com/sbfnk/EpiAwareR) | R interface to EpiAware.jl (prototype) |
 
@@ -39,6 +43,11 @@ Empty scaffold repositories are listed as *planned* until they have real, docume
 |---|---|
 | [GenerationTime.jl](https://github.com/EpiAware/GenerationTime.jl) | Representing and estimating generation time distributions |
 | [DEdiseasecomponents.jl](https://github.com/EpiAware/DEdiseasecomponents.jl) | Reusable components for differential equation infectious disease models |
+
+### Proposals
+
+New projects start as [project proposals](https://github.com/EpiAware/ProjectProposals) before they become scaffold repositories.
+If you have an idea for a composable modelling component that does not exist yet, add a proposal there.
 
 ### Papers
 
