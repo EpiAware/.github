@@ -1,0 +1,71 @@
+name: pre-commit
+
+# Runic formatting/lint gate, additive alongside format-check.yml
+# (JuliaFormatter). Part of the ecosystem's migration to Runic; see
+# format-check.yml for the workflow this will eventually replace once
+# every repo has migrated, and EpiAwarePackageTools.jl for the
+# consuming (kit) side of the migration.
+on:
+  workflow_call:
+    inputs:
+      runic_version:
+        description: >-
+          Runic.jl version expected to be pinned via
+          additional_dependencies in the calling repo's
+          .pre-commit-config.yaml. Not installed here -- see the
+          "Verify Runic version pin" step below for why.
+        required: false
+        type: string
+        default: '1'
+      extra_args:
+        description: 'Extra args passed to pre-commit run'
+        required: false
+        type: string
+        default: '--all-files'
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    # Cheap formatting/lint gate; a hung hook should die quickly.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+      - uses: julia-actions/setup-julia@v3
+      - uses: julia-actions/cache@v3
+      # The runic-pre-commit `runic` hook uses pre-commit's native
+      # `language: julia` support: pre-commit builds its own isolated
+      # environment for the hook and installs Runic there from the
+      # hook's `additional_dependencies` (e.g. 'Runic@1.7.0'), which is
+      # declared in the calling repo's .pre-commit-config.yaml, not
+      # here. That language implementation does not consult the
+      # runner's own package environment, so a `Pkg.add` step here
+      # (as used for JuliaFormatter in format-check.yml) would install
+      # Runic somewhere pre-commit never looks: it would look like a
+      # pin but do nothing. Left unpinned, the hook installs whichever
+      # Runic release is latest when its environment is first built,
+      # which is the version-float class of bug (#114) this workflow
+      # exists to avoid. So instead of installing Runic, check that
+      # the calling repo's pin agrees with `runic_version`, catching
+      # drift between the two before pre-commit runs.
+      - name: Verify Runic version pin
+        run: |
+          if ! grep -qF "Runic@${{ inputs.runic_version }}" \
+            .pre-commit-config.yaml; then
+            echo "::error file=.pre-commit-config.yaml::expected" \
+              "additional_dependencies to pin" \
+              "Runic@${{ inputs.runic_version }}, see" \
+              "https://github.com/fredrikekre/runic-pre-commit#runic-version"
+            exit 1
+          fi
+      - run: python -m pip install pre-commit
+      - run: python -m pip freeze --local
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/pre-commit
+            ~/.cache/R/renv
+          key: pre-commit-3|${{ env.pythonLocation }}|${{ hashFiles('.pre-commit-config.yaml') }}
+      - run: >-
+          pre-commit run --show-diff-on-failure --color=always
+          ${{ inputs.extra_args }}
