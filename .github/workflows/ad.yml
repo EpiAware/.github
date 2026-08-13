@@ -46,6 +46,22 @@ on:
         required: false
         type: boolean
         default: false
+      benchmark:
+        description: >-
+          Also benchmark this backend over the registry's scenarios and
+          upload the timings as an `ad-benchmark-<tag>` artefact. Off by
+          default: it roughly doubles each job's wall clock (the benchmark
+          re-pays the same per-scenario preparation the correctness run
+          does), so a caller opting in will usually need `timeout_minutes`
+          raised too.
+        required: false
+        type: boolean
+        default: false
+      timeout_minutes:
+        description: 'Timeout for each per-backend job'
+        required: false
+        type: number
+        default: 60
     secrets:
       CODECOV_TOKEN:
         required: false
@@ -56,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     # AD backends (esp. Enzyme) are the slowest legs; cap them so a hung
     # gradient compile is killed rather than holding a runner for hours.
-    timeout-minutes: 60
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     strategy:
       fail-fast: ${{ inputs.fail_fast }}
       matrix:
@@ -84,3 +100,124 @@ jobs:
           flags: ${{ matrix.backend.flag }}
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+      # Opt-in per-backend benchmark (`benchmark: true`). Runs last, in the
+      # same job as the correctness test, so it reuses that job's cached
+      # depot and instantiated test project instead of paying a second
+      # install, and so nothing here can disturb the coverage upload above.
+      #
+      # `continue-on-error` because this is a shared reusable: a package
+      # whose registry, deps or DIT version don't support benchmarking must
+      # still get its correctness result. The artefact is then simply
+      # absent, which is the same state the consumer already handles for a
+      # backend whose job failed.
+      #
+      # The script is inlined rather than called from the package, so this
+      # works on any adopter without waiting for a scaffold sync, and the
+      # backend name is passed through the environment rather than
+      # interpolated into the source (registry names are free text).
+      - name: Benchmark ${{ matrix.backend.name }}
+        if: ${{ inputs.benchmark }}
+        continue-on-error: true
+        env:
+          AD_BACKEND_NAME: ${{ matrix.backend.name }}
+          AD_BACKEND_TAG: ${{ matrix.backend.tag }}
+        run: |
+          cat > ad-benchmark.jl <<'JL'
+          using Pkg
+          # DIT 0.11 made Chairmarks a weak dep; `benchmark_differentiation`
+          # needs it loaded to resolve `run_benchmark!`, and the package-owned
+          # AD test project has no reason to carry it for correctness runs.
+          Pkg.add(name = "Chairmarks",
+              uuid = "0ca39b1e-fe0b-4e98-acfc-b1656634c4de")
+
+          using ADFixtures
+          import DifferentiationInterfaceTest as DIT
+          using Chairmarks
+
+          name = ENV["AD_BACKEND_NAME"]
+          tag = ENV["AD_BACKEND_TAG"]
+
+          entries = ADFixtures.backends()
+          idx = findfirst(e -> e.name == name, entries)
+          if idx === nothing
+              @warn("no ADFixtures backend named $name; writing no artefact",
+                  known = [e.name for e in entries])
+              exit(0)
+          end
+
+          # The registry's broken/skip accessors are optional under the
+          # ADRegistry contract: absent means nothing is excluded.
+          optional(f, default) =
+              isdefined(ADFixtures, f) ? getfield(ADFixtures, f)() : default
+          excluded = union(
+              Set(String.(optional(:broken_scenario_names, String[]))),
+              get(optional(:backend_broken_scenarios,
+                      Dict{String, Set{String}}()), name, Set{String}()),
+              get(optional(:backend_skip_scenarios,
+                      Dict{String, Set{String}}()), name, Set{String}()))
+          scens = filter(s -> !(s.name in excluded), ADFixtures.scenarios())
+
+          # Same call and per-measurement budget the docs page used when it
+          # benchmarked every backend itself, for one backend instead of all.
+          results = DIT.benchmark_differentiation(
+              [entries[idx].backend], scens;
+              logging = false, benchmark_test = false, benchmark_seconds = 0.5)
+
+          rows = [(name = string(r.scenario.name),
+                      time_us = r.time * 1.0e6, bytes_kb = r.bytes / 1024)
+                  for r in results.rows
+                      if r.operator === :gradient &&
+                         r.scenario.name !== nothing &&
+                         isfinite(r.time) && isfinite(r.bytes)]
+
+          function jsonstring(s)
+              io = IOBuffer()
+              print(io, '"')
+              for c in s
+                  if c == '"'
+                      print(io, "\\\"")
+                  elseif c == '\\'
+                      print(io, "\\\\")
+                  elseif c < ' '
+                      print(io, "\\u",
+                          lpad(string(UInt32(c), base = 16), 4, '0'))
+                  else
+                      print(io, c)
+                  end
+              end
+              print(io, '"')
+              return String(take!(io))
+          end
+
+          num(x) = string(round(x; sigdigits = 6))
+
+          open("ad-benchmark-$tag.json", "w") do io
+              println(io, "{")
+              println(io, "  \"backend\": ", jsonstring(name), ",")
+              println(io, "  \"tag\": ", jsonstring(tag), ",")
+              println(io, "  \"scenarios\": [")
+              for (i, r) in enumerate(rows)
+                  println(io, "    {\"name\": ", jsonstring(r.name),
+                      ", \"time_us\": ", num(r.time_us),
+                      ", \"bytes_kb\": ", num(r.bytes_kb), "}",
+                      i == length(rows) ? "" : ",")
+              end
+              println(io, "  ]")
+              println(io, "}")
+          end
+          @info "wrote ad-benchmark-$tag.json" scenarios = length(rows)
+          JL
+          julia --project=${{ inputs.test_project }} ad-benchmark.jl
+
+      # Absent when the step above bailed or failed; the consumer renders
+      # what landed rather than requiring every backend. Also
+      # `continue-on-error`, so a failed upload cannot red a backend whose
+      # correctness run passed.
+      - uses: actions/upload-artifact@v7
+        if: ${{ inputs.benchmark }}
+        continue-on-error: true
+        with:
+          name: ad-benchmark-${{ matrix.backend.tag }}
+          path: ad-benchmark-${{ matrix.backend.tag }}.json
+          if-no-files-found: warn

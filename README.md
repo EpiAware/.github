@@ -33,7 +33,7 @@ caller and overrides only where it genuinely differs.
 | `cancel-on-close.yml` | Cancel in-progress/queued runs on a PR's head branch when the PR is closed or merged | `head_ref` (defaults to the event's `pull_request.head.ref`) |
 | `format-check.yml` | Python + pinned JuliaFormatter + pre-commit | `juliaformatter_version` (`2.5.5`), `extra_args` |
 | `tagbot.yml` | JuliaRegistries TagBot | `lookback` (`3`) |
-| `ad.yml` | AD gradient suite, internally matrixed over a backend list | `backends` (default: the six EpiAware backends below), `julia-version`, `test_project` (`test/ad`), `coverage_directories` (`src,ext`), `fail_fast` (`false`) |
+| `ad.yml` | AD gradient suite, internally matrixed over a backend list | `backends` (default: the six EpiAware backends below), `julia-version`, `test_project` (`test/ad`), `coverage_directories` (`src,ext`), `fail_fast` (`false`), `benchmark` (`false`), `timeout_minutes` (`60`) |
 | `ad-backend.yml` | Single-backend AD runner (one check per caller job) | `name`, `tag`, `flag`, `julia-version`, `test_project`, `coverage_directories` |
 | `downstream.yml` | Reverse-dependency tests (opt-in), internally matrixed over a downstream list | `downstreams` (`[]`), `julia_version`, `os`, `coverage` |
 | `release-nudge.yml` | Opens/refreshes a single issue when `main` has unreleased changes | `julia_version`, `registry` (`General`), `branch` (`main`), `label` (`release-nudge`), `stale_days` (`14`); optional secret `DOCUMENTER_KEY` |
@@ -47,6 +47,43 @@ forward, Mooncake reverse, Enzyme forward, Enzyme reverse. Override
 `backends` with a JSON array of `{name, tag, flag}` objects only to test a
 different set. `ad-backend.yml` (one backend per call, its own check name)
 remains for packages that need per-backend checks rather than a matrix.
+
+### AD benchmark artefacts
+
+`ad.yml` can also publish per-backend timings, so a docs page reports
+measured cost without benchmarking every (backend, scenario) pair itself
+during the build (`EpiAwarePackageTools.jl#443`). It is opt-in via
+`benchmark: true`, because most callers want correctness only and the
+extra step roughly doubles a job's wall clock: the benchmark re-pays the
+same per-scenario preparation (a ReverseDiff tape, an Enzyme or Mooncake
+rule) the correctness run already paid. Expect to raise `timeout_minutes`
+alongside it.
+
+The step runs last in the same job as the correctness test, so it reuses
+that job's cached depot and instantiated test project rather than paying a
+second install, and it is `continue-on-error`: a package whose registry or
+dependency set cannot benchmark still gets its correctness result, just no
+artefact.
+
+Each backend uploads `ad-benchmark-<tag>` (`<tag>` is the backend's
+existing test-item tag) holding one file, `ad-benchmark-<tag>.json`:
+
+```json
+{
+  "backend": "Enzyme forward",
+  "tag": "enzyme_forward",
+  "scenarios": [
+    {"name": "DirectInfections+Poisson posterior",
+     "time_us": 3.35, "bytes_kb": 12.4}
+  ]
+}
+```
+
+`time_us` is the prepared per-call gradient time in microseconds and
+`bytes_kb` its allocations in kibibytes. Scenarios the registry declares
+broken or skipped for that backend are absent from the list, and a backend
+whose job failed leaves no artefact at all, so a consumer must render what
+landed rather than require the full set.
 
 ### Fast-failing and runner efficiency
 
