@@ -53,17 +53,24 @@ remains for packages that need per-backend checks rather than a matrix.
 `ad.yml` can also publish per-backend timings, so a docs page reports
 measured cost without benchmarking every (backend, scenario) pair itself
 during the build (`EpiAwarePackageTools.jl#443`). It is opt-in via
-`benchmark: true`, because most callers want correctness only and the
-extra step roughly doubles a job's wall clock: the benchmark re-pays the
-same per-scenario preparation (a ReverseDiff tape, an Enzyme or Mooncake
-rule) the correctness run already paid. Expect to raise `timeout_minutes`
-alongside it.
+`benchmark: true`, because most callers want correctness only.
 
-The step runs last in the same job as the correctness test, so it reuses
-that job's cached depot and instantiated test project rather than paying a
-second install, and it is `continue-on-error`: a package whose registry or
-dependency set cannot benchmark still gets its correctness result, just no
-artefact.
+The timings come from the gradient run that already happens, not from a
+second one. With `benchmark: true` the job exports
+`AD_BENCHMARK_ARTIFACT_PATH` and `AD_BENCHMARK_TAG` into the existing test
+step, and the kit's AD harness passes `benchmark = :prepared` on the
+`DifferentiationInterfaceTest.test_differentiation` call it already makes
+for correctness, writing the JSON from what that returns. The package
+load and the Enzyme or Mooncake rule compiles are therefore paid once
+rather than twice. It is not free: DIT prepares separately for correctness
+and for benchmarking, so opting in still adds a preparation pass per
+scenario on top of the timing loop. Raise `timeout_minutes` alongside it.
+
+Both variables are empty unless `benchmark: true`, and empty is the
+harness's "off", so a caller that has not opted in runs exactly as before.
+A package on an older `EpiAwarePackageTools` ignores variables it has
+never heard of, so the opt-in is inert rather than broken until the kit
+catches up.
 
 Each backend uploads `ad-benchmark-<tag>` (`<tag>` is the backend's
 existing test-item tag) holding one file, `ad-benchmark-<tag>.json`:
@@ -83,7 +90,10 @@ existing test-item tag) holding one file, `ad-benchmark-<tag>.json`:
 `bytes_kb` its allocations in kibibytes. Scenarios the registry declares
 broken or skipped for that backend are absent from the list, and a backend
 whose job failed leaves no artefact at all, so a consumer must render what
-landed rather than require the full set.
+landed rather than require the full set. The upload takes the whole
+`ad-benchmarks/` directory rather than the single file, so a package whose
+test items split one backend across several harness calls still publishes
+everything they write.
 
 ### Fast-failing and runner efficiency
 
