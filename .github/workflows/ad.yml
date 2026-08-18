@@ -46,22 +46,6 @@ on:
         required: false
         type: boolean
         default: false
-      benchmark:
-        description: >-
-          Have the AD harness also time each scenario during the gradient
-          run and upload the result as an `ad-benchmark-<tag>` artefact.
-          Off by default: it adds a second preparation pass per scenario
-          plus the timing loop itself, so a caller opting in should raise
-          `timeout_minutes` too. Needs an EpiAwarePackageTools new enough
-          to honour `AD_BENCHMARK_ARTIFACT_PATH`.
-        required: false
-        type: boolean
-        default: false
-      timeout_minutes:
-        description: 'Timeout for each per-backend job'
-        required: false
-        type: number
-        default: 60
     secrets:
       CODECOV_TOKEN:
         required: false
@@ -72,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     # AD backends (esp. Enzyme) are the slowest legs; cap them so a hung
     # gradient compile is killed rather than holding a runner for hours.
-    timeout-minutes: ${{ inputs.timeout_minutes }}
+    timeout-minutes: 60
     strategy:
       fail-fast: ${{ inputs.fail_fast }}
       matrix:
@@ -87,38 +71,7 @@ jobs:
         run: >-
           julia --project=${{ inputs.test_project }}
           -e 'using Pkg; Pkg.instantiate()'
-
-      # Only when benchmarking. `run_benchmark!` lives in DIT's Chairmarks
-      # extension, and the AD test project is package-owned so it has no
-      # reason to carry Chairmarks for a correctness-only run.
-      #
-      # `continue-on-error`, and the directory is made before the resolve
-      # that can fail, so a package where Chairmarks cannot be added still
-      # runs its gradient tests: the harness finds no Chairmarks, falls back
-      # to correctness only, and the artefact is simply absent.
-      - name: Prepare benchmark output
-        if: ${{ inputs.benchmark }}
-        continue-on-error: true
-        run: |
-          mkdir -p "${{ github.workspace }}/ad-benchmarks"
-          julia --project=${{ inputs.test_project }} -e 'using Pkg;
-            Pkg.add(name = "Chairmarks",
-                uuid = "0ca39b1e-fe0b-4e98-acfc-b1656634c4de")'
-
-      # The benchmark is captured by this run rather than by a second one:
-      # the AD harness passes `benchmark = :prepared` on the
-      # `test_differentiation` call it already makes for correctness, so the
-      # package load and the Enzyme/Mooncake rule compiles are paid once. An
-      # unset or empty AD_BENCHMARK_ARTIFACT_PATH is the harness's "off", so
-      # a caller that has not opted in runs exactly as before, and a package
-      # on an older EpiAwarePackageTools ignores both variables.
       - name: Run AD gradient tests
-        env:
-          AD_BENCHMARK_ARTIFACT_PATH: >-
-            ${{ inputs.benchmark &&
-            format('{0}/ad-benchmarks/ad-benchmark-{1}.json',
-            github.workspace, matrix.backend.tag) || '' }}
-          AD_BENCHMARK_TAG: ${{ inputs.benchmark && matrix.backend.tag || '' }}
         run: |
           julia --project=${{ inputs.test_project }} --code-coverage=user \
             ${{ inputs.test_project }}/runtests.jl ${{ matrix.backend.tag }}
@@ -131,17 +84,3 @@ jobs:
           flags: ${{ matrix.backend.flag }}
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
-
-      # Uploads the directory, not the one file, so it keeps working if the
-      # harness ever writes more than one JSON per job (a package whose test
-      # items split a backend across several calls). `continue-on-error` so
-      # a failed upload cannot red a backend whose gradients are fine, and
-      # `if-no-files-found: warn` because "no artefact" is a state the
-      # consumer already renders rather than an error.
-      - uses: actions/upload-artifact@v7
-        if: ${{ inputs.benchmark }}
-        continue-on-error: true
-        with:
-          name: ad-benchmark-${{ matrix.backend.tag }}
-          path: ad-benchmarks/
-          if-no-files-found: warn

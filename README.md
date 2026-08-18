@@ -33,7 +33,7 @@ caller and overrides only where it genuinely differs.
 | `cancel-on-close.yml` | Cancel in-progress/queued runs on a PR's head branch when the PR is closed or merged | `head_ref` (defaults to the event's `pull_request.head.ref`) |
 | `format-check.yml` | Python + pinned JuliaFormatter + pre-commit | `juliaformatter_version` (`2.5.5`), `extra_args` |
 | `tagbot.yml` | JuliaRegistries TagBot | `lookback` (`3`) |
-| `ad.yml` | AD gradient suite, internally matrixed over a backend list | `backends` (default: the six EpiAware backends below), `julia-version`, `test_project` (`test/ad`), `coverage_directories` (`src,ext`), `fail_fast` (`false`), `benchmark` (`false`), `timeout_minutes` (`60`) |
+| `ad.yml` | AD gradient suite, internally matrixed over a backend list | `backends` (default: the six EpiAware backends below), `julia-version`, `test_project` (`test/ad`), `coverage_directories` (`src,ext`), `fail_fast` (`false`) |
 | `ad-backend.yml` | Single-backend AD runner (one check per caller job) | `name`, `tag`, `flag`, `julia-version`, `test_project`, `coverage_directories` |
 | `downstream.yml` | Reverse-dependency tests (opt-in), internally matrixed over a downstream list | `downstreams` (`[]`), `julia_version`, `os`, `coverage` |
 | `release-nudge.yml` | Opens/refreshes a single issue when `main` has unreleased changes | `julia_version`, `registry` (`General`), `branch` (`main`), `label` (`release-nudge`), `stale_days` (`14`); optional secret `DOCUMENTER_KEY` |
@@ -47,53 +47,6 @@ forward, Mooncake reverse, Enzyme forward, Enzyme reverse. Override
 `backends` with a JSON array of `{name, tag, flag}` objects only to test a
 different set. `ad-backend.yml` (one backend per call, its own check name)
 remains for packages that need per-backend checks rather than a matrix.
-
-### AD benchmark artefacts
-
-`ad.yml` can also publish per-backend timings, so a docs page reports
-measured cost without benchmarking every (backend, scenario) pair itself
-during the build (`EpiAwarePackageTools.jl#443`). It is opt-in via
-`benchmark: true`, because most callers want correctness only.
-
-The timings come from the gradient run that already happens, not from a
-second one. With `benchmark: true` the job exports
-`AD_BENCHMARK_ARTIFACT_PATH` and `AD_BENCHMARK_TAG` into the existing test
-step, and the kit's AD harness passes `benchmark = :prepared` on the
-`DifferentiationInterfaceTest.test_differentiation` call it already makes
-for correctness, writing the JSON from what that returns. The package
-load and the Enzyme or Mooncake rule compiles are therefore paid once
-rather than twice. It is not free: DIT prepares separately for correctness
-and for benchmarking, so opting in still adds a preparation pass per
-scenario on top of the timing loop. Raise `timeout_minutes` alongside it.
-
-Both variables are empty unless `benchmark: true`, and empty is the
-harness's "off", so a caller that has not opted in runs exactly as before.
-A package on an older `EpiAwarePackageTools` ignores variables it has
-never heard of, so the opt-in is inert rather than broken until the kit
-catches up.
-
-Each backend uploads `ad-benchmark-<tag>` (`<tag>` is the backend's
-existing test-item tag) holding one file, `ad-benchmark-<tag>.json`:
-
-```json
-{
-  "backend": "Enzyme forward",
-  "tag": "enzyme_forward",
-  "scenarios": [
-    {"name": "DirectInfections+Poisson posterior",
-     "time_us": 3.35, "bytes_kb": 12.4}
-  ]
-}
-```
-
-`time_us` is the prepared per-call gradient time in microseconds and
-`bytes_kb` its allocations in kibibytes. Scenarios the registry declares
-broken or skipped for that backend are absent from the list, and a backend
-whose job failed leaves no artefact at all, so a consumer must render what
-landed rather than require the full set. The upload takes the whole
-`ad-benchmarks/` directory rather than the single file, so a package whose
-test items split one backend across several harness calls still publishes
-everything they write.
 
 ### Fast-failing and runner efficiency
 
