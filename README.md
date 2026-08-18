@@ -33,8 +33,9 @@ caller and overrides only where it genuinely differs.
 | `cancel-on-close.yml` | Cancel in-progress/queued runs on a PR's head branch when the PR is closed or merged | `head_ref` (defaults to the event's `pull_request.head.ref`) |
 | `format-check.yml` | Python + pinned JuliaFormatter + pre-commit | `juliaformatter_version` (`2.5.5`), `extra_args` |
 | `tagbot.yml` | JuliaRegistries TagBot | `lookback` (`3`) |
-| `ad.yml` | AD gradient suite, internally matrixed over a backend list | `backends` (default: the six EpiAware backends below), `julia-version`, `test_project` (`test/ad`), `coverage_directories` (`src,ext`), `fail_fast` (`false`) |
+| `ad.yml` | AD gradient suite (`test` job) plus an uninstrumented AD benchmark suite (`bench`/`publish-bench` jobs), both internally matrixed over a backend list | `backends` (default: the six EpiAware backends below), `julia-version`, `test_project` (`test/ad`), `coverage_directories` (`src,ext`), `fail_fast` (`false`), `timeout_minutes` (`60`), `bench_timeout_minutes` (`60`), `run_bench` (`false`), `bench_artifact_prefix` (`ad-bench-`) |
 | `ad-backend.yml` | Single-backend AD runner (one check per caller job) | `name`, `tag`, `flag`, `julia-version`, `test_project`, `coverage_directories` |
+| `benchmark-preview-cleanup.yml` | Delete a closed PR's AD benchmark preview from the `benchmarks` branch | `git_user_name`, `git_user_email` (both default to the derived `github-actions[bot]` identity) |
 | `downstream.yml` | Reverse-dependency tests (opt-in), internally matrixed over a downstream list | `downstreams` (`[]`), `julia_version`, `os`, `coverage` |
 | `release-nudge.yml` | Opens/refreshes a single issue when `main` has unreleased changes | `julia_version`, `registry` (`General`), `branch` (`main`), `label` (`release-nudge`), `stale_days` (`14`); optional secret `DOCUMENTER_KEY` |
 | `major-version-tag.yml` | Maintains the moving `@v1` tag (runs here) | — |
@@ -47,6 +48,24 @@ forward, Mooncake reverse, Enzyme forward, Enzyme reverse. Override
 `backends` with a JSON array of `{name, tag, flag}` objects only to test a
 different set. `ad-backend.yml` (one backend per call, its own check name)
 remains for packages that need per-backend checks rather than a matrix.
+
+`ad.yml`'s `test` job (coverage-instrumented correctness) and `bench` job
+(uninstrumented, writes the per-backend AD benchmark artefact a consuming
+package's docs can render) are deliberately separate.
+A timing taken under `test`'s `--code-coverage=user` would measure the
+coverage instrumentation rather than the backend, so nothing about producing
+a benchmark can touch the coverage-gated correctness result.
+`bench` runs on a `main` push, a `workflow_dispatch`, or a pull request
+carrying a `benchmark` label; a PR without that label costs nothing extra.
+A `publish-bench` job aggregates every `bench` matrix leg's artefact into one
+push to the `benchmarks` branch, under `ad/latest/` for a `main` push or
+`ad/previews/PR<N>/` for a PR run, and joins the `benchmark-history-deploy`
+concurrency group so it never races a benchmark-history deploy or
+`benchmark-preview-cleanup.yml`'s squash-and-force-push in the same
+repository.
+`benchmark-preview-cleanup.yml` removes a PR's preview directory on close,
+the same way `docs-preview-cleanup.yml` clears `previews/PR<N>` from
+`gh-pages`.
 
 ### Fast-failing and runner efficiency
 

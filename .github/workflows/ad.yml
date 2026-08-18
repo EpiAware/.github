@@ -1,5 +1,12 @@
 name: AD
 
+# `test` and `bench` are separate jobs on the same backend matrix, not one
+# job doing both: `test` runs under `--code-coverage=user` for the
+# correctness gate, and a timing taken there would measure the coverage
+# instrumentation rather than the backend. `bench` runs uninstrumented, in
+# its own job, so nothing about producing a benchmark can touch the
+# coverage-gated correctness result (EpiAwarePackageTools.jl#443).
+
 on:
   workflow_call:
     inputs:
@@ -46,17 +53,50 @@ on:
         required: false
         type: boolean
         default: false
+      timeout_minutes:
+        description: 'Timeout for each per-backend `test` job'
+        required: false
+        type: number
+        default: 60
+      bench_timeout_minutes:
+        description: >-
+          Timeout for each per-backend `bench` job. A separate budget from
+          `timeout_minutes`: `bench` carries no coverage instrumentation but
+          still pays its own DIT preparation pass, so the two do not scale
+          together.
+        required: false
+        type: number
+        default: 60
+      run_bench:
+        description: >-
+          Force the `bench` jobs to run regardless of event. The caller
+          normally leaves this unset: `bench` already runs on a push to
+          `main`, on `workflow_dispatch`, and on a pull_request carrying a
+          `benchmark` label, without this input.
+        required: false
+        type: boolean
+        default: false
+      bench_artifact_prefix:
+        description: >-
+          Prefix for each `bench` job's uploaded artefact name
+          (`<prefix><tag>`), so a caller publishing more than one AD suite in
+          one workflow run can tell the sets apart at download time.
+        required: false
+        type: string
+        default: 'ad-bench-'
     secrets:
       CODECOV_TOKEN:
         required: false
 
 jobs:
+  # Unchanged from before #443: correctness only, coverage-instrumented,
+  # gates the per-backend codecov flag.
   ad:
     name: ${{ matrix.backend.name }}
     runs-on: ubuntu-latest
     # AD backends (esp. Enzyme) are the slowest legs; cap them so a hung
     # gradient compile is killed rather than holding a runner for hours.
-    timeout-minutes: 60
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     strategy:
       fail-fast: ${{ inputs.fail_fast }}
       matrix:
@@ -84,3 +124,102 @@ jobs:
           flags: ${{ matrix.backend.flag }}
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+
+  # Writes the per-backend AD benchmark artefact the scaffolded
+  # AD-comparison docs page renders, from its own uninstrumented job. Gated
+  # to the events where a benchmark run is worth its cost: a `main` push, a
+  # manual dispatch, or a PR carrying the `benchmark` label. A PR without
+  # that label costs nothing extra, same as before #443.
+  bench:
+    name: ${{ matrix.backend.name }} (bench)
+    if: >-
+      inputs.run_bench ||
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'benchmark'))
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.bench_timeout_minutes }}
+    strategy:
+      # A backend that cannot benchmark should not hide whether its siblings
+      # can; each uploads (or does not) independently.
+      fail-fast: false
+      matrix:
+        backend: ${{ fromJSON(inputs.backends) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ inputs.julia-version }}
+      - uses: julia-actions/cache@v3
+      - name: Instantiate ${{ inputs.test_project }}
+        run: >-
+          julia --project=${{ inputs.test_project }}
+          -e 'using Pkg; Pkg.instantiate()'
+      - name: Benchmark ${{ matrix.backend.name }}
+        run: >-
+          julia --project=${{ inputs.test_project }}
+          ${{ inputs.test_project }}/benchmark.jl
+          "${{ matrix.backend.name }}"
+          "ad-bench-${{ matrix.backend.tag }}.json"
+      # No `continue-on-error`: unlike the retired embedded design, this
+      # job's only purpose is producing a number, so a failure here should
+      # be visible rather than silently short a backend on the published
+      # page. `if-no-files-found: error` for the same reason.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: >-
+            ${{ inputs.bench_artifact_prefix }}${{ matrix.backend.tag }}
+          path: ad-bench-${{ matrix.backend.tag }}.json
+          if-no-files-found: error
+
+  # Aggregates every `bench` job's artefact into one push to the
+  # `benchmarks` branch, rather than each matrix job pushing on its own:
+  # jobs land on separate runners with nothing to serialise concurrent
+  # pushes to the same branch otherwise. Joins the `benchmark-history-deploy`
+  # concurrency group so it never races `benchmark-history.yaml`'s own
+  # deploy or `benchmark-preview-cleanup.yml`'s squash-and-force-push in the
+  # calling repository.
+  publish-bench:
+    name: Publish AD benchmarks
+    needs: [bench]
+    # Not `needs.bench.result == 'success'`: `bench` is a matrix job, so one
+    # backend failing to benchmark would mark the whole job `failure` and
+    # this condition would then skip publishing the backends that did
+    # succeed. Runs whenever `bench` was attempted at all (not gated off for
+    # this event) and the workflow was not cancelled; a backend with no
+    # uploaded artefact is simply absent from the download below.
+    if: ${{ !cancelled() && needs.bench.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: benchmark-history-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Download benchmark artefacts
+        uses: actions/download-artifact@v6
+        with:
+          pattern: ${{ inputs.bench_artifact_prefix }}*
+          path: ad-bench-out
+          merge-multiple: true
+      # `main` publishes to the stable `ad/latest/` location; a labelled or
+      # dispatched PR run publishes to its own preview directory instead, so
+      # concurrent PR runs never clobber each other or `ad/latest/`.
+      # `benchmark-preview-cleanup.yml` removes the PR directory on close.
+      - name: Choose the publish directory
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "dir=ad/previews/PR${{ github.event.pull_request.number }}" \
+              >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=ad/latest" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Deploy to benchmarks branch
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          branch: benchmarks
+          folder: ad-bench-out
+          target-folder: ${{ steps.target.outputs.dir }}
+          clean: true

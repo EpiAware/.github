@@ -1,0 +1,71 @@
+name: Benchmark Preview Cleanup
+
+# Clears a closed PR's `ad/previews/PR<N>/` directory from the `benchmarks`
+# branch, mirroring `docs-preview-cleanup.yml` for `gh-pages`
+# (EpiAwarePackageTools.jl#443). Two differences from that workflow, both
+# load-bearing:
+#
+#   - This joins the `benchmark-history-deploy` concurrency group,
+#     `benchmark-history.yaml` and `ad.yml`'s `publish-bench` job already
+#     use in the calling repository. `gh-pages` has no other writer to race;
+#     `benchmarks` does, and a cleanup force-push racing a history or
+#     benchmark deploy would drop whichever pushed second.
+#   - The squash below (`git commit-tree HEAD^{tree}`) discards commit
+#     history, not tree content: `history/`, `ad/latest/`, and any other
+#     `ad/previews/PR<M>/` stay in the tree exactly as they were, because
+#     `git rm -rf` only touches the one PR's subtree before the commit this
+#     squashes.
+
+on:
+  workflow_call:
+    inputs:
+      git_user_name:
+        description: 'git author name for the cleanup commit'
+        required: false
+        type: string
+        default: 'github-actions[bot]'
+      git_user_email:
+        description: 'git author email for the cleanup commit'
+        required: false
+        type: string
+        default: 'github-actions[bot]@users.noreply.github.com'
+
+jobs:
+  benchmark-preview-cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: benchmark-history-deploy
+      cancel-in-progress: false
+    steps:
+      # `continue-on-error`: unlike `gh-pages` (created by the first docs
+      # deploy, generally before any PR closes), `benchmarks` only exists
+      # once a `bench` leg has published at least once. A package that opted
+      # into `ad = true` but has not yet had a qualifying push or dispatch
+      # has no such branch, and that is nothing to clean up, not a failure.
+      - name: Checkout benchmarks branch
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          ref: benchmarks
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Delete preview and history + push changes
+        if: steps.checkout.outcome == 'success'
+        run: |
+            if [ -d "ad/previews/PR$PRNUM" ]; then
+              git config user.name "$GIT_USER_NAME"
+              git config user.email "$GIT_USER_EMAIL"
+              git rm -rf "ad/previews/PR$PRNUM"
+              git commit -m "delete AD benchmark preview for PR$PRNUM"
+              git branch benchmarks-new \
+                $(echo "delete history" | git commit-tree HEAD^{tree})
+              git push --force origin benchmarks-new:benchmarks
+            fi
+        env:
+            PRNUM: ${{ github.event.number }}
+            GIT_USER_NAME: ${{ inputs.git_user_name }}
+            GIT_USER_EMAIL: ${{ inputs.git_user_email }}
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
