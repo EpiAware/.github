@@ -36,6 +36,11 @@ on:
         required: false
         type: string
         default: 'src,ext'
+      timeout_minutes:
+        description: 'Job timeout in minutes for each backend leg'
+        required: false
+        type: number
+        default: 120
       fail_fast:
         description: >-
           Cancel remaining backends when one fails. Default false so a
@@ -56,7 +61,12 @@ jobs:
     runs-on: ubuntu-latest
     # AD backends (esp. Enzyme) are the slowest legs; cap them so a hung
     # gradient compile is killed rather than holding a runner for hours.
-    timeout-minutes: 60
+    # 60 was too tight to tell a hang from a slow sweep: Enzyme forward on
+    # ComposableTuringIDModels took 28-51 min across ten green runs and was
+    # killed at the cap on main as well as on PR branches, so the cap was
+    # firing on runner speed rather than on a hang. 120 keeps a hang well
+    # short of the 6h ceiling while clearing the observed spread.
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     strategy:
       fail-fast: ${{ inputs.fail_fast }}
       matrix:

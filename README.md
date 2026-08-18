@@ -52,8 +52,9 @@ remains for packages that need per-backend checks rather than a matrix.
 
 Every job sets a `timeout-minutes` so a hung run ("runner lost
 communication") is killed and its slot freed instead of sitting until the
-6h ceiling: 60 for the test and AD matrices, 45 for coverage / downgrade /
-docs, 20 for the format check, 10-15 for the housekeeping jobs.
+6h ceiling: 120 for the AD matrix, 60 for the test matrix, 45 for coverage
+/ downgrade / docs, 20 for the format check, 10-15 for the housekeeping
+jobs.
 
 `tests.yml` defaults `fail_fast: false`. The matrix mixes the required
 merge-gate legs (Julia 1/lts on ubuntu) with non-required legs (macOS,
