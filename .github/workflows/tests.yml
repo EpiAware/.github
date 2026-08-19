@@ -28,6 +28,34 @@ on:
         required: false
         type: string
         default: '1'
+      upload_coverage:
+        description: >-
+          Collect coverage on the ubuntu leg at quality_version and upload
+          it to Codecov. That leg already runs the whole suite, so the
+          upload costs seconds and a caller enabling this can drop its
+          separate coverage workflow. Off by default so a caller that
+          still runs one does not upload the same report twice.
+        required: false
+        type: boolean
+        default: false
+      coverage_directories:
+        description: 'Directories to process for coverage (comma separated)'
+        required: false
+        type: string
+        default: 'src'
+      coverage_flags:
+        description: 'Codecov flag for this upload'
+        required: false
+        type: string
+        default: 'unit'
+      fail_ci_if_error:
+        description: >-
+          Fail the leg if the Codecov upload errors. A repo with no
+          CODECOV_TOKEN cannot upload on a protected branch, so CI goes red
+          as a reminder to add the secret.
+        required: false
+        type: boolean
+        default: true
       fail_fast:
         description: >-
           Cancel remaining matrix jobs when one fails. Default false: this
@@ -41,6 +69,9 @@ on:
         required: false
         type: boolean
         default: false
+    secrets:
+      CODECOV_TOKEN:
+        required: false
 
 jobs:
   test:
@@ -63,6 +94,13 @@ jobs:
         os: ${{ fromJSON(inputs.os) }}
     env:
       JULIA_CI_EXPERIMENTAL: ${{ contains(fromJSON(inputs.experimental_versions), matrix.julia-version) }}
+      # The one leg that collects and uploads coverage. Instrumentation
+      # slows a run down, so only this leg pays for it and the rest test
+      # uninstrumented.
+      IS_COVERAGE_CELL: >-
+        ${{ inputs.upload_coverage
+            && matrix.os == 'ubuntu-latest'
+            && matrix.julia-version == inputs.quality_version }}
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
@@ -72,8 +110,20 @@ jobs:
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         with:
+          coverage: ${{ env.IS_COVERAGE_CELL }}
           test_args: >-
             ${{ (inputs.skip_quality &&
                  (matrix.julia-version != inputs.quality_version ||
                   matrix.os == 'windows-latest'))
                 && 'skip_quality' || '' }}
+      - if: env.IS_COVERAGE_CELL == 'true'
+        uses: julia-actions/julia-processcoverage@v1
+        with:
+          directories: ${{ inputs.coverage_directories }}
+      - if: env.IS_COVERAGE_CELL == 'true'
+        uses: codecov/codecov-action@v7
+        with:
+          files: lcov.info
+          flags: ${{ inputs.coverage_flags }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: ${{ inputs.fail_ci_if_error }}
