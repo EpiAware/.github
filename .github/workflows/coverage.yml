@@ -1,5 +1,10 @@
 name: Coverage
 
+# A standalone coverage run, for callers whose test matrix has no ubuntu
+# leg at the version they want coverage from. A caller that has one
+# should set upload_coverage on tests.yml instead and drop this job: that
+# leg already runs the same suite, so this workflow repeats it in full.
+
 on:
   workflow_call:
     inputs:
