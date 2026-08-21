@@ -1,3 +1,5 @@
+<img src="assets/logo.svg" width="200" alt="EpiAware ecosystem logo">
+
 # EpiAware
 
 A composable Julia ecosystem for infectious disease modelling.
