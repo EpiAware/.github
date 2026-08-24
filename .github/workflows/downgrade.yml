@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: 'deps'
+      org:
+        description: 'Org hosting EpiAwarePackageTools.jl'
+        required: false
+        type: string
+        default: EpiAware
       test_args:
         description: 'Extra args passed to julia-runtest test_args'
         required: false
@@ -58,7 +63,8 @@ jobs:
             Pkg.add([
                 Pkg.PackageSpec(name = "LocalRegistry"),
                 Pkg.PackageSpec(
-                    url = "https://github.com/EpiAware/EpiAwarePackageTools.jl",
+                    url = "https://github.com/${{ inputs.org }}" *
+                          "/EpiAwarePackageTools.jl",
                     rev = "main")])
             using EpiAwarePackageTools.Benchmarks: bootstrap_sources_registry
             done = bootstrap_sources_registry(pwd())
