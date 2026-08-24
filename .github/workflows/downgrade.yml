@@ -30,10 +30,43 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ inputs.julia_version }}
+      # Ahead of the downgrade step, unlike the action's own example: the
+      # bootstrap below writes into the depot, and a restore landing after it
+      # would overwrite that with whatever the cache holds.
+      - uses: julia-actions/cache@v3
+      # Pkg honours `[sources]` only in the *active* project, so a step that
+      # collects dependencies without resolving the pins cannot see a
+      # dependency pinned by git url/rev and absent from General. A registry
+      # is depot-level, so registering the pins makes them resolve by name in
+      # every environment on this runner. No-op without a `[sources]` table.
+      #
+      # The scratch registry is rebuilt every run: a restored one is stale by
+      # construction, since an unregistered pin's version never bumps when
+      # its revision moves. It is dropped before the guard as well, so a
+      # caller that has since dropped its pin is not left with a registry
+      # still carrying the name, which fails the depot with a hash mismatch.
+      - name: Bootstrap registry for unregistered [sources] deps
+        run: |
+          rm -rf "${JULIA_DEPOT_PATH:-$HOME/.julia}/registries/EpiAwareScratch"
+          if ! grep -qE '^\[sources(\.|\])' Project.toml; then
+            echo "no [sources] section: nothing to register"
+            exit 0
+          fi
+          julia -e '
+            using Pkg
+            Pkg.activate(; temp = true)
+            Pkg.add([
+                Pkg.PackageSpec(name = "LocalRegistry"),
+                Pkg.PackageSpec(
+                    url = "https://github.com/EpiAware/EpiAwarePackageTools.jl",
+                    rev = "main")])
+            using EpiAwarePackageTools.Benchmarks: bootstrap_sources_registry
+            done = bootstrap_sources_registry(pwd())
+            println(isempty(done) ? "no unregistered [sources] deps" :
+                    "registered: " * join(done, ", "))'
       - uses: julia-actions/julia-downgrade-compat@v2
         with:
           mode: ${{ inputs.mode }}
-      - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         with:
