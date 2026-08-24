@@ -9,10 +9,14 @@ on:
         type: string
         default: '1'
       julia_num_threads:
-        description: 'JULIA_NUM_THREADS for the docs build'
+        description: >-
+          JULIA_NUM_THREADS for the docs build. Defaults to every core the
+          runner has: docs that sample MCMC chains or render many plots are
+          the slow ones, and both parallelise. A build that must stay
+          single-threaded to be reproducible can pass '1'.
         required: false
         type: string
-        default: '1'
+        default: 'auto'
       timeout_minutes:
         description: 'Job timeout in minutes for the docs build'
         required: false
@@ -28,8 +32,22 @@ jobs:
       contents: write
       statuses: write
       pull-requests: write
+      # The docs-preview comment is created through the issues API, which
+      # `pull-requests: write` alone does not reach: posting a comment on a PR
+      # is `POST /repos/{o}/{r}/issues/{n}/comments`. Without this the whole
+      # job 403s at its last step after a successful build.
+      issues: write
     name: Documentation
     runs-on: ubuntu-latest
+    # Every caller deploys to the same `gh-pages` branch with a plain push, so
+    # two docs builds finishing together lose the race and one goes red with
+    # "failed to push some refs" after building correctly. Serialise per
+    # repository rather than per ref: the collision is between *different*
+    # PRs, so a ref-scoped group would not see it. Queued rather than
+    # cancelled — each preview still has to be published.
+    concurrency:
+      group: gh-pages-deploy-${{ github.repository }}
+      cancel-in-progress: false
     # Docs build/deploy; cap so a hung Documenter run frees the runner.
     # Configurable so MCMC-heavy docs (multi-chain sampling + plots) can raise it.
     timeout-minutes: ${{ inputs.timeout_minutes }}
