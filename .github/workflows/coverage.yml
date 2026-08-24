@@ -29,11 +29,7 @@ on:
         type: string
         default: 'unit'
       timeout_minutes:
-        description: >-
-          Job timeout in minutes. Raise it for a suite whose runtime sits
-          near the default: a run killed at the cap skips coverage
-          processing and upload, so the check reports failed even though
-          nothing in the suite failed.
+        description: 'Job timeout in minutes for the coverage run'
         required: false
         type: number
         default: 45
@@ -50,6 +46,9 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     # Single test+coverage run; cap so a hung suite frees the runner.
+    # Configurable because a suite sitting near the cap flaps: when the cap
+    # kills the run, coverage processing and upload are both skipped, so the
+    # check reports failed with nothing in the suite having failed.
     timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
       - uses: actions/checkout@v7
