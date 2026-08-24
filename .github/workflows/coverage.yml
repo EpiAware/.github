@@ -28,6 +28,15 @@ on:
         required: false
         type: string
         default: 'unit'
+      timeout_minutes:
+        description: >-
+          Job timeout in minutes. Raise it for a suite whose runtime sits
+          near the default: a run killed at the cap skips coverage
+          processing and upload, so the check reports failed even though
+          nothing in the suite failed.
+        required: false
+        type: number
+        default: 45
       fail_ci_if_error:
         description: 'Fail the job if the Codecov upload errors'
         required: false
@@ -41,7 +50,7 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     # Single test+coverage run; cap so a hung suite frees the runner.
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
