@@ -413,17 +413,17 @@ jobs:
                   "pull request that should ship next. The Version On " *
                   "Demand workflow commits the bump onto that PR " *
                   "branch.\n" *
-                  "2. Update `NEWS.md` with a summary of the " *
-                  "unreleased changes, then merge that pull request " *
-                  "into `$(BRANCH)`. The Register workflow and the " *
-                  "`/register` slash command always act on " *
-                  "`$(BRANCH)`'s current HEAD commit, never on a PR " *
-                  "branch, so the bump must land on `$(BRANCH)` " *
-                  "first.\n" *
+                  "2. Merge that pull request into `$(BRANCH)`. The " *
+                  "Register workflow and the `/register` slash " *
+                  "command always act on `$(BRANCH)`'s current HEAD " *
+                  "commit, never on a PR branch, so the bump must " *
+                  "land on `$(BRANCH)` first.\n" *
                   "3. Once `$(BRANCH)` carries the version to " *
                   "release, either comment the slash command " *
                   "`/register` on an issue or pull request, or run " *
-                  "the Register workflow manually from the Actions tab."
+                  "the Register workflow manually from the Actions " *
+                  "tab, then check the published release notes read " *
+                  "sensibly."
 
               sections = String[]
               push!(sections, "## Release nudge")
