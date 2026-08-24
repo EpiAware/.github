@@ -30,6 +30,11 @@ on:
         required: false
         type: string
         default: 'src,ext'
+      timeout_minutes:
+        description: 'Job timeout in minutes for the backend leg'
+        required: false
+        type: number
+        default: 120
     secrets:
       CODECOV_TOKEN:
         required: false
@@ -39,8 +44,9 @@ jobs:
     name: ${{ inputs.name }}
     runs-on: ubuntu-latest
     # AD gradient compiles (esp. Enzyme) are the slowest legs; cap them so
-    # a hung run is killed rather than holding a runner for hours.
-    timeout-minutes: 60
+    # a hung run is killed rather than holding a runner for hours. See
+    # `ad.yml` for why the cap is 120 rather than 60.
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
