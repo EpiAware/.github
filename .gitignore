@@ -1,0 +1,4 @@
+# Nested git worktrees, by the org convention of keeping them inside the
+# repo rather than beside it. They are separate checkouts, not repo content:
+# without this a `git add -A` stages them as embedded repositories.
+worktrees/
