@@ -13,6 +13,15 @@ on:
         required: false
         type: string
         default: 'deps'
+      projects:
+        description: >-
+          Projects whose compat is floored, comma separated. A workspace
+          member shares the root manifest, so a package with one must name
+          it here as well as `.` or the member's own dependencies keep
+          their upper bounds.
+        required: false
+        type: string
+        default: '.'
       test_args:
         description: 'Extra args passed to julia-runtest test_args'
         required: false
@@ -33,6 +42,7 @@ jobs:
       - uses: julia-actions/julia-downgrade-compat@v2
         with:
           mode: ${{ inputs.mode }}
+          projects: ${{ inputs.projects }}
       - uses: julia-actions/cache@v3
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1

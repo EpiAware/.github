@@ -26,7 +26,7 @@ caller and overrides only where it genuinely differs.
 | Workflow | Purpose | Key inputs (default) |
 |---|---|---|
 | `tests.yml` | Test matrix (Julia versions x OS) + skip_quality | `julia_versions` (`["1","lts","pre"]`), `os` (ubuntu/windows/macOS), `experimental_versions` (`["pre"]`), `skip_quality`, `quality_version`, `fail_fast` |
-| `downgrade.yml` | Test against oldest compatible deps | `julia_version` (`1.10`), `mode` (`deps`), `test_args` |
+| `downgrade.yml` | Test against oldest compatible deps | `julia_version` (`1.10`), `mode` (`deps`), `test_args`, `projects` (`.`) |
 | `coverage.yml` | Single-run coverage + Codecov upload | `julia_version`, `test_args`, `coverage_directories` (`src`), `flags` (`unit`), `fail_ci_if_error` |
 | `documentation.yml` | Documenter build/deploy + PR preview comment | `julia_version`, `julia_num_threads` |
 | `docs-preview-cleanup.yml` | Delete closed-PR previews from gh-pages | `git_user_name`, `git_user_email` (both default to the derived `github-actions[bot]` identity) |
