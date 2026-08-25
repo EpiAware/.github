@@ -1,0 +1,128 @@
+name: Docs Preview Sweep
+
+# Companion to docs-preview-cleanup.yml. That workflow fires when a PR closes,
+# which loses a race in repos whose docs build outlives the PR: the preview is
+# pushed to gh-pages after the cleanup has already run, and is then orphaned
+# forever. This sweep runs on a schedule and drops every previews/PR* directory
+# whose PR is no longer open, so late arrivals are collected on the next pass.
+
+on:
+  workflow_call:
+    inputs:
+      git_user_name:
+        description: 'git author name for the sweep commit'
+        required: false
+        type: string
+        default: 'github-actions[bot]'
+      git_user_email:
+        description: 'git author email for the sweep commit'
+        required: false
+        type: string
+        default: 'github-actions[bot]@users.noreply.github.com'
+      dry_run:
+        description: 'log what would be removed without pushing'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  docs-preview-sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: read
+    concurrency:
+      group: gh-pages-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout gh-pages branch
+        uses: actions/checkout@v7
+        with:
+          ref: gh-pages
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sweep previews for closed pull requests
+        run: |
+          set -euo pipefail
+
+          if [ ! -d previews ]; then
+            echo "no previews directory on gh-pages, nothing to sweep"
+            exit 0
+          fi
+
+          git config user.name "$GIT_USER_NAME"
+          git config user.email "$GIT_USER_EMAIL"
+
+          # An empty or failed listing must never be read as "no PRs are open",
+          # or the sweep would delete the previews of every open PR.
+          if ! gh pr list --state open --limit 1000 --json number \
+                 --jq '.[].number' > "$RUNNER_TEMP/open-prs.txt"; then
+            echo "::error::could not list open pull requests, refusing to sweep"
+            exit 1
+          fi
+          sed -i 's|^|previews/PR|' "$RUNNER_TEMP/open-prs.txt"
+          open=$(wc -l < "$RUNNER_TEMP/open-prs.txt")
+          echo "open PRs whose previews are kept: $open"
+
+          removed=0
+          for dir in previews/PR*; do
+            [ -d "$dir" ] || continue
+            if ! grep -qxF "$dir" "$RUNNER_TEMP/open-prs.txt"; then
+              echo "removing $dir"
+              git rm -rq "$dir"
+              removed=$((removed + 1))
+            fi
+          done
+
+          if [ "$removed" -eq 0 ]; then
+            echo "no orphaned previews found"
+            exit 0
+          fi
+          echo "removed $removed orphaned preview(s)"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry run, leaving gh-pages untouched"
+            exit 0
+          fi
+
+          git commit -qm "sweep previews for $removed closed PR(s)"
+
+          # gh-pages only ever needs its current tree, and these previews are
+          # large enough that keeping their history is what bloats the repo.
+          # Replace the branch with a single parentless commit each time.
+          # A concurrent docs deploy can land between our checkout and our
+          # push, so rebuild the sweep against the new tip rather than
+          # force-pushing over it.
+          for attempt in 1 2 3; do
+            flat=$(echo "sweep previews for $removed closed PR(s)" \
+                     | git commit-tree 'HEAD^{tree}')
+            if git push --force origin "$flat:gh-pages"; then
+              echo "pushed on attempt $attempt"
+              exit 0
+            fi
+            echo "push rejected, retrying against the current gh-pages tip"
+            git fetch origin gh-pages
+            git reset --hard FETCH_HEAD
+            removed=0
+            for dir in previews/PR*; do
+              [ -d "$dir" ] || continue
+              if ! grep -qxF "$dir" "$RUNNER_TEMP/open-prs.txt"; then
+                git rm -rq "$dir"
+                removed=$((removed + 1))
+              fi
+            done
+            if [ "$removed" -eq 0 ]; then
+              echo "another run swept these previews first, nothing left to do"
+              exit 0
+            fi
+            git commit -qm "sweep previews for $removed closed PR(s)"
+          done
+
+          echo "::error::could not push the sweep after 3 attempts"
+          exit 1
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          GIT_USER_NAME: ${{ inputs.git_user_name }}
+          GIT_USER_EMAIL: ${{ inputs.git_user_email }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
