@@ -23,11 +23,15 @@ on:
             "flag": "ad-enzyme-forward"},
            {"name": "Enzyme reverse", "tag": "enzyme_reverse",
             "flag": "ad-enzyme-reverse"}]
-      julia-version:
-        description: 'Julia version to test on'
+      julia_versions:
+        description: >-
+          JSON array of Julia versions to run every backend on, e.g.
+          ["1", "lts"]. Legs on the first version upload coverage and keep
+          the backend name as their check name; the others are named
+          "<backend> (Julia <version>)" and upload none.
         required: false
         type: string
-        default: '1'
+        default: '["1"]'
       test_project:
         description: 'Project dir holding the AD suite and its runtests.jl'
         required: false
@@ -59,7 +63,10 @@ on:
 
 jobs:
   ad:
-    name: ${{ matrix.backend.name }}
+    name: >-
+      ${{ matrix.backend.name }}${{ matrix.julia-version
+      != fromJSON(inputs.julia_versions)[0]
+      && format(' (Julia {0})', matrix.julia-version) || '' }}
     runs-on: ubuntu-latest
     # AD backends (esp. Enzyme) are the slowest legs; cap them so a hung
     # gradient compile is killed rather than holding a runner for hours.
@@ -73,24 +80,42 @@ jobs:
       fail-fast: ${{ inputs.fail_fast }}
       matrix:
         backend: ${{ fromJSON(inputs.backends) }}
+        julia-version: ${{ fromJSON(inputs.julia_versions) }}
+    env:
+      # Only the first version's legs collect and upload coverage, so each
+      # per-backend flag gets one report.
+      IS_COVERAGE_LEG: ${{ matrix.julia-version == fromJSON(inputs.julia_versions)[0] }}
+      TEST_PROJECT: ${{ inputs.test_project }}
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
-          version: ${{ inputs.julia-version }}
+          version: ${{ matrix.julia-version }}
       - uses: julia-actions/cache@v3
+      # Julia before 1.11 ignores `[sources]`, so develop the test project's
+      # path sources by hand there.
       - name: Instantiate ${{ inputs.test_project }}
-        run: >-
-          julia --project=${{ inputs.test_project }}
-          -e 'using Pkg; Pkg.instantiate()'
+        run: |
+          julia --project="$TEST_PROJECT" -e '
+            using Pkg, TOML
+            if VERSION < v"1.11"
+                project = TOML.parsefile(joinpath(ENV["TEST_PROJECT"], "Project.toml"))
+                paths = [joinpath(ENV["TEST_PROJECT"], s["path"])
+                         for s in values(get(project, "sources", Dict())) if haskey(s, "path")]
+                isempty(paths) || Pkg.develop([PackageSpec(path = p) for p in paths])
+            end
+            Pkg.instantiate()'
       - name: Run AD gradient tests
         run: |
-          julia --project=${{ inputs.test_project }} --code-coverage=user \
-            ${{ inputs.test_project }}/runtests.jl ${{ matrix.backend.tag }}
-      - uses: julia-actions/julia-processcoverage@v1
+          julia --project="$TEST_PROJECT" \
+            --code-coverage=${{ env.IS_COVERAGE_LEG == 'true' && 'user' || 'none' }} \
+            "$TEST_PROJECT/runtests.jl" ${{ matrix.backend.tag }}
+      - if: env.IS_COVERAGE_LEG == 'true'
+        uses: julia-actions/julia-processcoverage@v1
         with:
           directories: ${{ inputs.coverage_directories }}
-      - uses: codecov/codecov-action@v7
+      - if: env.IS_COVERAGE_LEG == 'true'
+        uses: codecov/codecov-action@v7
         with:
           files: lcov.info
           flags: ${{ matrix.backend.flag }}
