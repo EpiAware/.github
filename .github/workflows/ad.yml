@@ -28,6 +28,14 @@ on:
         required: false
         type: string
         default: '1'
+      coverage:
+        description: >-
+          Collect and upload coverage. A second caller on another Julia
+          version sets this to false so each per-backend flag gets one
+          report.
+        required: false
+        type: boolean
+        default: true
       test_project:
         description: 'Project dir holding the AD suite and its runtests.jl'
         required: false
@@ -73,24 +81,38 @@ jobs:
       fail-fast: ${{ inputs.fail_fast }}
       matrix:
         backend: ${{ fromJSON(inputs.backends) }}
+    env:
+      TEST_PROJECT: ${{ inputs.test_project }}
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ inputs.julia-version }}
       - uses: julia-actions/cache@v3
+      # Julia before 1.11 ignores `[sources]`, so develop the test project's
+      # path sources by hand there.
       - name: Instantiate ${{ inputs.test_project }}
-        run: >-
-          julia --project=${{ inputs.test_project }}
-          -e 'using Pkg; Pkg.instantiate()'
+        run: |
+          julia --project="$TEST_PROJECT" -e '
+            using Pkg, TOML
+            if VERSION < v"1.11"
+                project = TOML.parsefile(joinpath(ENV["TEST_PROJECT"], "Project.toml"))
+                paths = [joinpath(ENV["TEST_PROJECT"], s["path"])
+                         for s in values(get(project, "sources", Dict())) if haskey(s, "path")]
+                isempty(paths) || Pkg.develop([PackageSpec(path = p) for p in paths])
+            end
+            Pkg.instantiate()'
       - name: Run AD gradient tests
         run: |
-          julia --project=${{ inputs.test_project }} --code-coverage=user \
-            ${{ inputs.test_project }}/runtests.jl ${{ matrix.backend.tag }}
-      - uses: julia-actions/julia-processcoverage@v1
+          julia --project="$TEST_PROJECT" \
+            --code-coverage=${{ inputs.coverage && 'user' || 'none' }} \
+            "$TEST_PROJECT/runtests.jl" ${{ matrix.backend.tag }}
+      - if: inputs.coverage
+        uses: julia-actions/julia-processcoverage@v1
         with:
           directories: ${{ inputs.coverage_directories }}
-      - uses: codecov/codecov-action@v7
+      - if: inputs.coverage
+        uses: codecov/codecov-action@v7
         with:
           files: lcov.info
           flags: ${{ matrix.backend.flag }}

@@ -69,6 +69,13 @@ on:
         required: false
         type: boolean
         default: false
+      timeout_minutes:
+        description: >-
+          Job timeout in minutes for each leg. Raise it for a suite whose
+          slowest leg (often macOS) runs close to the default.
+        required: false
+        type: number
+        default: 60
     secrets:
       CODECOV_TOKEN:
         required: false
@@ -78,7 +85,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     # Kill a hung leg fast so it frees the runner instead of sitting in
     # "lost communication" until the 6h ceiling.
-    timeout-minutes: 60
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     # Pre-release Julia (experimental_versions, default ["pre"]) is allowed
     # to fail: Mooncake/AD don't support pre-release Julia, so `test (pre,*)`
     # is expected-flaky and must never gate. Note this only stops it being
